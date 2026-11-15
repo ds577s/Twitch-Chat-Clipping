@@ -1,0 +1,65 @@
+# Messages removed before scoring, because they create fake spikes.
+
+# Usernames (login names, case-insensitive) whose messages are ignored.
+bots:
+  - nightbot
+  - streamelements
+  - streamlabs
+  - moobot
+  - fossabot
+  - wizebot
+  - botisimo
+  - sery_bot
+  - soundalerts
+  - kofistreambot
+  - streamstickers
+  - pokemoncommunitygame
+  - blerp
+  - tangiabot
+  - creatisbot
+  - fourthwallhq
+  - own3d
+
+# Drop messages that start with "!" (chat commands, giveaway entries).
+drop_commands: true
+
+# Drop cheers (messages with bits attached).
+drop_bits: true
+
+# Regexes (case-insensitive) for messages chat sends because the streamer ASKED
+# (polls, "type 1 if..."). They spike, but nothing happened on stream.
+prompted_patterns:
+  - "^\\d{1,2}$"          # "1", "2", "69" poll votes
+
+# Ignore the start/end of the VOD (stream intro "hi", outro "WW STREAM" / "gn").
+ignore_first_seconds: 0
+ignore_last_seconds: 150
+
+# Regexes (case-insensitive) for Twitch system notices that show up in VOD chat.
+system_patterns:
+  - "\\bsubscribed (at|with) (tier|prime)"
+  - "\\bsubscribed for \\d+ months?"
+  - "\\bgifted an? (tier \\d )?sub"
+  - "\\bgifted \\d+ (tier \\d )?subs?"
+  - "\\bis gifting \\d+"
+  - "\\bis continuing the gift sub"
+  - "\\bis paying forward the gift"
+  - "\\bconverted from a prime sub"
+  - "\\bis raiding with a party of"
+  - "^(cheer|biblethump|cheerwhal|kappa|corgo|uni|showlove|party|seemsgood|pride|kreygasm|swiftrage|notlikethis|failfish|vohiyo|pjsalt|mrdestructoid|bday|ripcheer|shamrock)\\d+\\b"
+
+# Raids: when raiders arrive they spam "<channel>Raid" emotes. If a window has at
+# least `min_messages` messages matching `pattern`, the next `mute_seconds` of
+# chat can't produce a clip.
+raid:
+  # "raid", "raiders", or a camelCase channel emote like "speedRaid" — but not "afraid"
+  pattern: "\\braid|(?-i:[a-z0-9]Raid)"
+  min_messages: 5
+  mute_seconds: 90
+
+# Gift-sub bombs: a gift notice of `min_count` or more subs mutes the next
+# `mute_seconds` (chat spams thank-yous and emotes).
+gift_bomb:
+  pattern: "\\b(?:is gifting|gifted) (\\d+)"
+  min_count: 5
+  mute_seconds: 45

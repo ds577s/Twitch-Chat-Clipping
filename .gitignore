@@ -1,0 +1,21 @@
+# Output (clips, cached chat, reports)
+clips/
+
+# External binaries go in bin/ locally but aren't committed (see bin/README.md)
+bin/*
+!bin/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

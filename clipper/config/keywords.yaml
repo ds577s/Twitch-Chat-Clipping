@@ -1,0 +1,63 @@
+# Reaction keywords and scoring weights.
+#
+# Window score = sum over counted messages of (1 + keyword_weight)
+#              + unique_chatter_weight * unique_chatters
+#
+# A message gets the HIGHEST weight among the keywords it contains, so
+# "KEKW KEKW KEKW KEKW" counts once, not four times.
+#
+# Matching is case-insensitive and whole-word ("W" won't match "WOW").
+# Emoji match anywhere in the message. Prefix an entry with "re:" for a
+# Python regular expression.
+
+scoring:
+  # Count at most this many messages per user per window (0 = unlimited).
+  # 1 means one spammer can't fake a spike.
+  per_user_cap: 1
+  # Extra points per distinct chatter in the window.
+  unique_chatter_weight: 1.0
+
+categories:
+  funny:
+    weight: 1.5
+    keywords:
+      - LMAO
+      - LMFAO
+      - LOL
+      - KEKW
+      - KEKL
+      - OMEGALUL
+      - LUL
+      - LULW
+      - ICANT
+      - I CANT
+      - pepeLaugh
+      - "💀"
+      - "😂"
+      - "🤣"
+  hype:
+    weight: 2.0
+    keywords:
+      - "re:\\?{3,}"
+      - NO WAY
+      - NOWAY
+      - WTF
+      - OMG
+      - HOLY
+      - W
+      - "re:(?<!\\w)w{2,}(?!\\w)"   # WW, WWWW, wwwww
+      - Pog
+      - PogChamp
+      - PogU
+      - POGGERS
+      - monkaS
+      - monkaW
+      - "😱"
+  clip:
+    weight: 3.0
+    keywords:
+      - CLIP
+      - CLIP IT
+      - CLIP THAT
+      - CLIPPED
+      - CLIPPPED

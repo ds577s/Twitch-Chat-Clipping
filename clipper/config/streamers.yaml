@@ -1,0 +1,22 @@
+# Facecam positions for the "stacked" layout.
+#
+# Key = streamer's Twitch login name (lowercase), or whatever you pass to --streamer.
+# Coordinates are in pixels of a frame that is `ref_height` tall (default 1080),
+# so they still work if you download at 720p.
+#
+# To find the numbers: pause the VOD at 1080p, take a screenshot, and read the
+# facecam box's top-left corner (x, y) and size (w, h) in any image editor.
+#
+# One position:      facecam: { x: 1500, y: 750, w: 420, h: 330 }
+# Several positions: facecams: [ {...}, {...} ]
+#   For each clip, the tool checks which box has a face in it (needs
+#   opencv-python-headless) and uses that one. If none does, that clip uses center crop.
+
+streamers:
+  examplestreamer:
+    facecam: { x: 1500, y: 750, w: 420, h: 330 }
+
+  ishowspeed:
+    facecams:
+      - { x: 2, y: 400, w: 454, h: 252 }   # left, mid-height (reaction / solo Fortnite)
+      - { x: 2, y: 842, w: 428, h: 236 }   # bottom-left (duo layout with partner cams)
