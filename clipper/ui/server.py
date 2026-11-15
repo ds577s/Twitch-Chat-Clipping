@@ -650,6 +650,19 @@ def _open_folder(d: Path) -> None:
 
 
 # --------------------------------------------------------------------------- entry point
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # On Windows SO_REUSEADDR lets a second server bind a port that's already in use, so an
+    # old dashboard and a new one could share it. Fail instead and move on to the next port.
+    allow_reuse_address = os.name != "nt"
+
+    def handle_error(self, request, client_address):
+        # Browsers drop idle keep-alive connections all the time; that's not an error.
+        if isinstance(sys.exc_info()[1], (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="clipper ui", description="Open the Chat Spike Clipper dashboard in your browser.")
     ap.add_argument("--port", type=int, default=8765, help="Port on 127.0.0.1 (the next free one is used if taken)")
@@ -665,15 +678,14 @@ def main(argv: list[str]) -> int:
     httpd = None
     for port in range(args.port, args.port + 20):
         try:
-            httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
+            httpd = Server(("127.0.0.1", port), handler)
             break
         except OSError:
             continue
     if httpd is None:
         print(f"error: no free port between {args.port} and {args.port + 19}", file=sys.stderr)
         return 2
-    httpd.daemon_threads = True
-    port = httpd.server_address[1]
+    port =httpd.server_address[1]
     app.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
     url = f"http://127.0.0.1:{port}/"
     print(f"Chat Spike Clipper dashboard: {url}")

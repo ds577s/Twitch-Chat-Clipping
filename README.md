@@ -41,8 +41,11 @@ It also looks in `bin\`, or in the paths you set in `CLIPPER_TWITCHDOWNLOADER`,
 clipper ui
 ```
 
-Opens a dashboard in your browser. Keep the terminal window open while you use it; closing
-it (or Ctrl-C) stops the dashboard and anything running.
+Opens a dashboard in your browser. Or double-click **`dashboard.bat`** in this folder, which
+also works when `clipper` isn't found yet (a terminal opened before Python was installed
+doesn't see it). Keep that window open while you use it; closing it (or Ctrl-C) stops the
+dashboard and anything running. If you close the browser tab, the dashboard is still at
+http://127.0.0.1:8765/ while the window is open.
 
 - **VODs tab:** paste a VOD link, click **Preview moments** to rank them from chat only, look at
   the chat chart and the top messages for each moment, untick the ones you don't want, then
