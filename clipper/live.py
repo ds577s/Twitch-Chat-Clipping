@@ -21,7 +21,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from . import ClipperError, config, facecam, report, tools, video
+from . import ClipperError, config, events, facecam, report, tools, video
 from .chat import CleanStats, Message, VodMeta, classify, normalize
 from .config import FilterConfig, ScoringConfig
 from .detect import (DetectParams, Moment, Window, baseline_threshold, moment_from_group,
@@ -181,6 +181,7 @@ class ClipWorker(threading.Thread):
                 with self._plock:
                     self.pending.pop(rec_entry["rank"], None)
                 self.on_done()
+                events.emit("clip", rank=rec_entry["rank"], status="failed" if rec_entry.get("error") else "done")
 
     def _make(self, rec_entry: dict, a: float, b: float) -> None:
         deadline = time.time() + 60
@@ -272,10 +273,12 @@ def run(args: argparse.Namespace) -> int:
 
     sess_dir = Path(args.out) / f"live_{channel}_{datetime.now():%Y%m%d_%H%M%S}"
     sess_dir.mkdir(parents=True, exist_ok=True)
+    events.emit("session", mode="live", dir=str(sess_dir.resolve()), name=sess_dir.name, channel=channel)
+    events.emit("state", state="waiting")
     rec = Recorder(sess_dir / "buffer", found["ffmpeg"],
                    source=streamlink_cmd(found["streamlink"], channel, args.quality, args.oauth, wait=True))
-    events: queue.Queue = queue.Queue()
-    chat = LiveChat(channel, events)
+    chat_q: queue.Queue = queue.Queue()
+    chat = LiveChat(channel, chat_q)
     chat.start()
     rec.start()
     print(f"Watching twitch.tv/{channel} — waiting for the stream to go live (Ctrl-C to stop)...")
@@ -297,40 +300,56 @@ def run(args: argparse.Namespace) -> int:
             meta = VodMeta(vod_id=sess_dir.name, streamer=channel, title="live session",
                            length=time.time() - t0)
             report.write_reports(sess_dir, meta, p, det.stats, records)
+            report.write_activity(sess_dir, p.window, list(det.windows))
+        events.emit("report")
 
     try:
         # Wait for the stream to start. Chat from before that is ignored.
         while t0 is None:
-            _drain_info(events)
+            _drain_info(chat_q)
+            if events.stop_requested():
+                raise KeyboardInterrupt
             t0 = rec.first_segment_time()
             if t0 is None and not rec.running():
                 raise ClipperError(f"streamlink stopped before the stream started:\n{rec.log_tail()}")
             time.sleep(0.5)
         print(f"[{_clock(time.time())}] stream is live — recording (buffer {args.buffer:.0f}s) and watching chat")
+        events.emit("state", state="live", t0=t0)
         det = LiveDetector(scoring, filters, p, t0)
         worker = ClipWorker(rec, sess_dir, found["ffmpeg"], args.layout, candidates, save_report)
         worker.start()
+        save_report()  # so the session (and the dashboard's view of it) exists from the start
 
         hour_counts: Counter = Counter()
         last_cleanup = last_status = time.time()
         reconnecting_since: float | None = None
         seen_until = rec.covered_until()
+        sent_windows = sent_msgs = 0
 
         while True:
             try:
-                ev = events.get(timeout=0.5)
+                ev = chat_q.get(timeout=0.5)
             except queue.Empty:
                 ev = None
             while ev is not None:
                 _handle_event(ev, det, log_f)
                 try:
-                    ev = events.get_nowait()
+                    ev = chat_q.get_nowait()
                 except queue.Empty:
                     ev = None
 
+            if events.stop_requested():
+                raise KeyboardInterrupt
             now = time.time()
             for m, why in det.tick(now):
                 _consider(m, why, det, worker, records, accepted, live_clips, hour_counts, args, t0)
+            if events.enabled() and len(det.windows) > sent_windows:
+                new_msgs = det.msgs[sent_msgs:]
+                sent_msgs = len(det.msgs)
+                for w in det.windows[sent_windows:]:
+                    events.emit("window", row=report.window_row(w))
+                sent_windows = len(det.windows)
+                events.emit("chat", messages=[[m.user, m.body[:200]] for m in new_msgs[-8:]])
 
             if now - last_cleanup > 5:
                 last_cleanup = now
@@ -344,6 +363,10 @@ def run(args: argparse.Namespace) -> int:
                 rate = sum(w.messages for w in recent)
                 print(f"[{_clock(now)}] live {report.hms(now - t0, False)} | {rate} msgs/min | "
                       f"{len(records)} clips")
+                rec_ok = rec.covered_until()
+                events.emit("status", elapsed=now - t0, rate=rate, clips=len(records),
+                            video_lag=round(now - rec_ok, 1) if rec_ok else None)
+                save_report()
 
             if args.stop_after and now - t0 >= args.stop_after * 60:
                 print(f"[{_clock(now)}] --stop-after {args.stop_after:g} min reached.")
@@ -357,6 +380,7 @@ def run(args: argparse.Namespace) -> int:
             if not rec.running():
                 if reconnecting_since is None:
                     print(f"[{_clock(now)}] stream video stopped — checking if it comes back (up to ~2 min)...")
+                    events.emit("state", state="reconnecting")
                     reconnecting_since = now
                     rec.stop()
                     rec.source = streamlink_cmd(found["streamlink"], channel, args.quality, args.oauth, wait=False)
@@ -376,6 +400,7 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     # Shutdown: stop inputs, close any spike in progress, finish pending clips.
+    events.emit("state", state="finishing", ended=ended)
     rec.stop()
     chat.stop()
     log_f.close()
@@ -405,6 +430,8 @@ def run(args: argparse.Namespace) -> int:
         shutil.rmtree(sess_dir / "buffer", ignore_errors=True)
         shutil.rmtree(sess_dir / "raw", ignore_errors=True)
     print(f"\nLive session saved to {sess_dir}")
+    events.emit("report")
+    events.emit("state", state="done", ended=ended)
 
     if args.vod_after and det is not None:
         if stopped_by_user and not ended:
@@ -415,10 +442,10 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _drain_info(events: queue.Queue) -> None:
+def _drain_info(q: queue.Queue) -> None:
     while True:
         try:
-            ev = events.get_nowait()
+            ev = q.get_nowait()
         except queue.Empty:
             return
         if ev[0] == "info":
@@ -448,15 +475,15 @@ def _consider(m: Moment, why: str | None, det: LiveDetector, worker: ClipWorker,
               accepted: list, live_clips: list, hour_counts: Counter, args, t0: float) -> None:
     when = _clock(t0 + m.peak_time)
     top = ", ".join(t[:20] for t, _ in m.top_messages[:3])
-    if why:
-        print(f"[{when}] skipped: {why}  ({top})")
-        return
     hour = int(m.peak_time // 3600)
-    if args.max_clips and len(records) >= args.max_clips:
-        print(f"[{when}] spike (score {m.peak_score:.0f}) skipped: --max-clips {args.max_clips} reached")
-        return
-    if args.max_per_hour and hour_counts[hour] >= args.max_per_hour:
-        print(f"[{when}] spike (score {m.peak_score:.0f}) skipped: --max-per-hour {args.max_per_hour} reached")
+    if not why and args.max_clips and len(records) >= args.max_clips:
+        why = f"--max-clips {args.max_clips} reached"
+    elif not why and args.max_per_hour and hour_counts[hour] >= args.max_per_hour:
+        why = f"--max-per-hour {args.max_per_hour} reached"
+    if why:
+        print(f"[{when}] spike (score {m.peak_score:.0f}) skipped: {why}  ({top})")
+        events.emit("skipped", peak_time=m.peak_time, clock=when, score=round(m.peak_score, 1), reason=why,
+                    top=[t for t, _ in m.top_messages[:3]])
         return
     hour_counts[hour] += 1
     n = len(records) + 1
@@ -471,6 +498,7 @@ def _consider(m: Moment, why: str | None, det: LiveDetector, worker: ClipWorker,
     print(f"[{when}] SPIKE score {m.peak_score:.0f} ({m.ratio:.1f}x baseline) — cutting clip {n} "
           f"({b - a:.0f}s): {top}")
     worker.submit(rec, a, b)
+    events.emit("clip", rank=n, status="working")
 
 
 def latest_vod_id(ytdlp: str, channel: str) -> str | None:
@@ -484,6 +512,7 @@ def latest_vod_id(ytdlp: str, channel: str) -> str | None:
 def _vod_after(channel: str, args, live_clips, t0: float, found: dict) -> int:
     from .cli import process_vod
     print("\n=== VOD follow-up: ranking the whole stream ===")
+    events.emit("state", state="vod")
     try:
         time.sleep(30)  # give Twitch a moment to finalize the VOD
         vod_id = latest_vod_id(found["yt-dlp"], channel)

@@ -2,6 +2,7 @@
 
   clipper <VOD URL | ID | list.txt> [options]     VOD mode
   clipper live <channel> [options]                live mode
+  clipper ui                                      web dashboard in your browser
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from pathlib import Path
 
 from . import ClipperError, __version__
 from . import chat as chatmod
-from . import config, facecam, report, tools, video
+from . import config, events, facecam, report, tools, video
 from .detect import DetectParams, detect
 
 
@@ -72,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="clipper",
         description="Find the best moments in Twitch VODs using chat spikes, and cut vertical 9:16 clips. "
-                    "For live streams, run:  clipper live <channel>",
+                    "For live streams, run:  clipper live <channel>.  For the web dashboard:  clipper ui",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("inputs", nargs="+", metavar="url",
@@ -84,6 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--dry-run", action="store_true", help="Only write the report; download no video")
     g.add_argument("--refresh-chat", action="store_true", help="Re-download chat even if cached")
     g.add_argument("--chat-file", type=Path, help="Use this local chat JSON instead of downloading (single VOD only)")
+    g.add_argument("--only", default=None, metavar="RANKS",
+                   help="Only cut these moments, by rank from a dry run with the same settings, e.g. 1,3,4")
     _add_config_args(g)
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p
@@ -150,6 +153,7 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
     vod_id = chatmod.parse_vod_id(vod_input)
     vod_dir = Path(args.out) / vod_id
     vod_dir.mkdir(parents=True, exist_ok=True)
+    events.emit("session", mode="vod", dir=str(vod_dir.resolve()), name=vod_id)
 
     # 1. Chat (cached)
     if args.chat_file:
@@ -163,6 +167,7 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
             if not found.get("twitchdownloader"):
                 tools.require(["twitchdownloader"])
             print(f"[{vod_id}] downloading chat (this can take a few minutes for long VODs)...")
+            events.emit("stage", text="Downloading chat (a few minutes for long VODs)")
             chatmod.download_chat(vod_id, chat_path, found["twitchdownloader"], args.oauth)
 
     meta, comments = chatmod.load_chat(chat_path, vod_id)
@@ -182,14 +187,27 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
     msgs, stats = chatmod.clean(comments, filters, params.window, meta.length)
     wins, moments = detect(msgs, meta.length or 0, scoring, params, stats.mutes)
 
-    records = [report.moment_record(i, m, vod_id, None if args.dry_run else report.clip_filename(i, m))
-               for i, m in enumerate(moments, 1)]
+    records = []
+    for i, m in enumerate(moments, 1):
+        fname = report.clip_filename(i, m)
+        if args.dry_run and not (vod_dir / fname).exists():  # a preview still lists clips cut earlier
+            fname = None
+        records.append(report.moment_record(i, m, vod_id, fname))
     if live_clips and meta.created_at:
         n = _mark_clipped_live(moments, records, meta.created_at, live_clips)
         if n:
             print(f"[{vod_id}] {n} of these moments were already clipped live; skipping them")
+    only = _parse_only(args.only) if getattr(args, "only", None) else None
+    if only is not None and not args.dry_run:
+        for rec in records:
+            if rec["rank"] not in only and rec["file"]:
+                rec["not_selected"] = True
+                if not (vod_dir / rec["file"]).exists():  # keep clips cut in an earlier run
+                    rec["file"] = None
     report.print_summary(meta, stats, records)
     jpath, _ = report.write_reports(vod_dir, meta, params, stats, records)
+    report.write_activity(vod_dir, params.window, wins)
+    events.emit("report")
 
     if args.plot:
         from .plot import save_plot
@@ -216,12 +234,19 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
                   f"first one is used for every clip. pip install \"opencv-python-headless<5\" to auto-pick.")
 
     raw_dir = vod_dir / "raw"
-    todo = [(i, m, rec) for i, (m, rec) in enumerate(zip(moments, records), 1) if rec["file"]]
+    todo = [(i, m, rec) for i, (m, rec) in enumerate(zip(moments, records), 1)
+            if rec["file"] and not rec.get("not_selected")]
     failed = 0
     for n, (i, m, rec) in enumerate(todo, 1):
+        if events.stop_requested():
+            print(f"[{vod_id}] stopped; {n - 1}/{len(todo)} clips were made")
+            for _, _, r in todo[n - 1:]:
+                r["file"] = None
+            break
         dest = vod_dir / rec["file"]
         raw = raw_dir / f"{i:02d}_{int(m.clip_start)}-{int(m.clip_end)}.mp4"
         print(f"[{vod_id}] clip {n}/{len(todo)}: {rec['clip_start_hms']} ({rec['duration']:.0f}s)")
+        events.emit("clip", rank=rec["rank"], status="working", n=n, total=len(todo))
         try:
             if not (raw.exists() and raw.stat().st_size > 0):
                 video.download_segment(vod_id, m.clip_start, m.clip_end, raw, found,
@@ -243,15 +268,26 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
             rec["file"] = None
             rec["error"] = str(e).splitlines()[0]
             print(f"  ! {e}", file=sys.stderr)
+        report.write_reports(vod_dir, meta, params, stats, records)
+        events.emit("clip", rank=rec["rank"], status="failed" if rec.get("error") else "done",
+                    n=n, total=len(todo))
     if raw_dir.exists() and not any(raw_dir.iterdir()):
         raw_dir.rmdir()
 
     report.write_reports(vod_dir, meta, params, stats, records)
-    done = len(todo) - failed
+    events.emit("report")
+    done = sum(1 for _, _, r in todo if r["file"])
     print(f"[{vod_id}] {done}/{len(todo)} clips written to {vod_dir}")
     if failed and not done:
         raise ClipperError(f"[{vod_id}] every clip failed; see errors above.")
     return vod_dir
+
+
+def _parse_only(s: str) -> set[int]:
+    try:
+        return {int(x) for x in s.replace(" ", "").split(",") if x}
+    except ValueError as e:
+        raise ClipperError(f"--only takes clip ranks like 1,3,4 (got {s!r})") from e
 
 
 # --------------------------------------------------------------------------- entry point
@@ -263,6 +299,9 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "ui":
+        from .ui import server
+        return server.main(argv[1:])
     if argv and argv[0] == "live":
         from . import live
         args = build_live_parser().parse_args(argv[1:])

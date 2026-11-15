@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 from pathlib import Path
 
 from .chat import CleanStats, VodMeta
@@ -63,8 +64,10 @@ def write_reports(out_dir: Path, meta: VodMeta, params: DetectParams, stats: Cle
         "params": vars(params),
         "clips": records,
     }
-    with open(jpath, "w", encoding="utf-8") as f:
+    tmp = jpath.with_suffix(".tmp")   # the UI may read it at any moment
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
+    _replace(tmp, jpath)
 
     cols = ["rank", "file", "clipped_live", "clock_time", "clip_start_hms", "clip_start", "clip_end", "duration", "peak_time_hms",
             "peak_score", "baseline", "ratio", "peak_unique_chatters", "messages_in_spike",
@@ -78,6 +81,34 @@ def write_reports(out_dir: Path, meta: VodMeta, params: DetectParams, stats: Cle
             row["top_messages"] = " | ".join(f"{m['text']} (x{m['count']})" for m in r["top_messages"])
             w.writerow(row)
     return jpath, cpath
+
+
+def window_row(w) -> list:
+    """Compact per-window record for activity.json and live UI events:
+    [start, score, threshold, spike, muted, messages]."""
+    return [w.start, round(w.score, 1), round(w.threshold, 1), int(w.spike), w.muted or "", w.messages]
+
+
+def write_activity(out_dir: Path, window: float, wins) -> Path:
+    """Chat activity per window, for the web UI's chart."""
+    path = out_dir / "activity.json"
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"window": window, "columns": ["start", "score", "threshold", "spike", "muted", "messages"],
+                   "rows": [window_row(w) for w in wins]}, f, ensure_ascii=False, separators=(",", ":"))
+    _replace(tmp, path)
+    return path
+
+
+def _replace(tmp: Path, dest: Path) -> None:
+    """Atomic rename. On Windows it fails while another process has `dest` open, so retry."""
+    for _ in range(20):
+        try:
+            tmp.replace(dest)
+            return
+        except PermissionError:
+            time.sleep(0.05)
+    tmp.replace(dest)
 
 
 def print_summary(meta: VodMeta, stats: CleanStats, records: list[dict]) -> None:

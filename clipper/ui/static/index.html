@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat Spike Clipper</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c5cff'/%3E%3Cpath d='M5 22h5l3-9 4 13 3-8 2 4h5' fill='none' stroke='white' stroke-width='2.6' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+<script>window.CLIPPER_TOKEN = "__CLIPPER_TOKEN__";</script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><path d="M5 22h5l3-9 4 13 3-8 2 4h5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span>Chat Spike Clipper</span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button data-tab="vod" class="active">VODs</button>
+    <button data-tab="live">Live</button>
+    <button data-tab="setup">Setup</button>
+  </nav>
+  <div class="top-right"><button id="toolsPill" class="pill" data-tab="setup"></button></div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="side-head">
+      <span>Runs</span>
+      <button id="openOut" class="link">Open clips folder</button>
+    </div>
+    <div id="runList" class="run-list"><div class="empty">Nothing yet.</div></div>
+  </aside>
+
+  <main>
+    <!-- VOD -->
+    <section id="view-vod" class="view active">
+      <div class="card form-card">
+        <h2>Find the best moments in a VOD</h2>
+        <input id="vodUrl" class="big-input" autocomplete="off" spellcheck="false"
+               placeholder="Paste a Twitch VOD link, e.g. https://www.twitch.tv/videos/123456789">
+        <div class="opts" id="vodBasic"></div>
+        <details class="adv"><summary>More settings</summary><div class="opts" id="vodAdv"></div>
+          <button class="link reset" data-reset="vod">Reset to defaults</button></details>
+        <div class="actions">
+          <button class="btn primary" id="vodPreview">Preview moments</button>
+          <button class="btn" id="vodCut">Cut all clips</button>
+          <span class="hint">Preview downloads only the chat and ranks the moments. Changing settings and previewing again is instant.</span>
+        </div>
+      </div>
+      <div id="vodJob"></div>
+      <div id="vodSession"></div>
+    </section>
+
+    <!-- LIVE -->
+    <section id="view-live" class="view">
+      <div class="card form-card">
+        <h2>Clip a live stream</h2>
+        <input id="liveChannel" class="big-input" autocomplete="off" spellcheck="false"
+               placeholder="Channel name, e.g. ishowspeed">
+        <div class="opts" id="liveBasic"></div>
+        <details class="adv"><summary>More settings</summary><div class="opts" id="liveAdv"></div>
+          <button class="link reset" data-reset="live">Reset to defaults</button></details>
+        <div class="actions">
+          <button class="btn primary" id="liveStart">Start watching</button>
+          <span class="hint">If the channel is offline it waits for it to go live. Keep this PC awake while it runs.</span>
+        </div>
+      </div>
+      <div id="liveJob"></div>
+      <div id="liveSession"></div>
+    </section>
+
+    <!-- SETUP -->
+    <section id="view-setup" class="view">
+      <div class="card">
+        <h2>Tools</h2>
+        <div id="toolsList" class="tools"></div>
+      </div>
+
+      <div class="card">
+        <h2>Facecam position</h2>
+        <p class="sub">For the "Facecam on top" layout. Grab a frame from the stream, then drag a box around the
+          facecam. If the streamer moves their cam between scenes, draw one box per position: each clip uses
+          whichever box has a face in it.</p>
+        <div class="fc-controls">
+          <label class="field"><span>Streamer</span>
+            <input id="fcStreamer" placeholder="twitch login, e.g. ishowspeed" spellcheck="false"></label>
+          <div class="field">
+            <span>Frame from</span>
+            <div class="seg" id="fcSource">
+              <button data-src="vod" class="active">VOD</button><button data-src="live">Live channel</button>
+            </div>
+          </div>
+          <label class="field grow" id="fcVodWrap"><span>VOD link</span>
+            <input id="fcVod" placeholder="https://www.twitch.tv/videos/..." spellcheck="false"></label>
+          <label class="field narrow" id="fcTimeWrap"><span>At</span>
+            <input id="fcTime" placeholder="1:02:30" value="0:10:00"></label>
+          <button class="btn" id="fcGrab">Grab frame</button>
+        </div>
+        <div class="fc-main">
+          <div class="fc-stage" id="fcStage">
+            <img id="fcImg" alt="">
+            <canvas id="fcCanvas"></canvas>
+            <div class="fc-empty" id="fcEmpty">Grab a frame to draw on it.</div>
+          </div>
+          <div class="fc-side">
+            <div class="fc-preview-wrap">
+              <canvas id="fcPreview" width="162" height="288"></canvas>
+              <div class="cap">Clip preview</div>
+            </div>
+            <div id="fcBoxes" class="fc-boxes"></div>
+            <div class="actions tight">
+              <button class="btn primary" id="fcSave">Save positions</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Keywords and filters</h2>
+        <p class="sub">Which chat words count extra, which bots and spam are ignored, and saved facecams. Changes
+          apply to the next run. A backup of the previous version is kept next to the file.</p>
+        <div class="seg" id="cfgTabs">
+          <button data-cfg="keywords.yaml" class="active">Keywords</button><button data-cfg="filters.yaml">Filters</button><button data-cfg="streamers.yaml">Streamers</button>
+        </div>
+        <textarea id="cfgText" spellcheck="false"></textarea>
+        <div class="actions tight">
+          <button class="btn primary" id="cfgSave">Save</button>
+          <button class="btn" id="cfgRevert">Undo changes</button>
+          <span class="hint" id="cfgPath"></span>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

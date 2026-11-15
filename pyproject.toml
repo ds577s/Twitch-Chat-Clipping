@@ -19,7 +19,8 @@ live = ["streamlink>=6", "yt-dlp"]
 clipper = "clipper.cli:main"
 
 [tool.setuptools]
-packages = ["clipper"]
+packages = ["clipper", "clipper.ui"]
 
 [tool.setuptools.package-data]
 clipper = ["config/*.yaml"]
+"clipper.ui" = ["static/*"]

@@ -5,6 +5,7 @@ as the signal, and cuts them into vertical 1080×1920 clips. It works on past br
 (VODs) and on live streams.
 
 ```bash
+clipper ui                                         # dashboard in your browser (everything below, with buttons)
 clipper https://www.twitch.tv/videos/123456789     # VOD: rank the whole stream, top 15 clips
 clipper live somechannel                           # live: a clip ~1 minute after each spike
 clipper live somechannel --vod-after               # both: live clips now, best-of from the VOD after
@@ -33,6 +34,32 @@ pip install -e ".[plot,facecam,live]"
 The tool checks for these binaries at startup and tells you what's missing.
 It also looks in `bin\`, or in the paths you set in `CLIPPER_TWITCHDOWNLOADER`,
 `CLIPPER_FFMPEG`, `CLIPPER_YTDLP` and `CLIPPER_STREAMLINK`.
+
+## Dashboard
+
+```bash
+clipper ui
+```
+
+Opens a dashboard in your browser. Keep the terminal window open while you use it; closing
+it (or Ctrl-C) stops the dashboard and anything running.
+
+- **VODs tab:** paste a VOD link, click **Preview moments** to rank them from chat only, look at
+  the chat chart and the top messages for each moment, untick the ones you don't want, then
+  **Cut selected**. Clips play right on the page. Changing settings and previewing again is
+  instant, because the chat is cached.
+- **Live tab:** type a channel and **Start watching**. You see the chat, a live chart, every
+  spike (clipped or skipped, and why) and the clips as they're made. **Stop** finishes any
+  clip in progress first. Reloading the page doesn't interrupt anything.
+- **Setup tab:** which tools are installed, a **facecam picker** (grab a frame from a VOD or a
+  live channel, drag a box around the facecam, see a preview of the vertical clip, save), and
+  an editor for the keyword and filter files.
+- **Runs** (left): everything in your clips folder, live sessions and VODs, to look back at.
+
+Each run the dashboard starts is a normal `clipper` command (shown under the run), so the
+dashboard and the terminal always behave the same. It only listens on `127.0.0.1` (this PC);
+other devices and websites can't use it. `clipper ui --port 9000` picks another port,
+`--out D:\clips` another clips folder.
 
 ## Workflow
 
@@ -141,6 +168,7 @@ clips/<vod_id>/
   02_00h46m45s_score152.mp4
   report.json                    # everything: params, cleaning stats, muted periods, clips
   report.csv                     # one row per clip, top chat messages, VOD link at the timestamp
+  activity.json                  # chat score per window (the dashboard's chart)
   chat_activity.png              # with --plot
 ```
 
@@ -191,6 +219,7 @@ Run `clipper --help` for the full list. Main ones:
 | `--plot` | off | Save `chat_activity.png` |
 | `--oauth` | `$TWITCH_OAUTH` | For sub-only VODs |
 | `--chat-file` | | Use an existing chat JSON |
+| `--only` | | Only cut these ranks from a dry run with the same settings, e.g. `1,3,4` |
 
 Live mode (`clipper live --help` for all): the same detection, boundary, layout and config
 options, plus:
@@ -216,4 +245,6 @@ Uses a synthetic 3-hour chat with real moments plus bot spam, a single-user spam
 a gift bomb, a raid, cheers and `!enter` floods, and checks that only the real moments come out.
 The live tests replay the same kind of stream in real-time order (including a ramp-up and
 a sudden lasting jump in chat that must not become clips), parse real Twitch chat lines,
-and record, cut and clean up a rolling buffer with ffmpeg.
+and record, cut and clean up a rolling buffer with ffmpeg. The dashboard tests check that
+only known options reach the command line, and that saving facecams leaves the rest of
+`streamers.yaml` untouched byte for byte.
