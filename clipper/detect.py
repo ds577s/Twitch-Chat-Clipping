@@ -3,6 +3,7 @@ merge them into moments, rank them, and compute clip boundaries."""
 
 from __future__ import annotations
 
+import bisect
 import math
 import statistics
 from collections import Counter
@@ -81,12 +82,30 @@ def score_windows(msgs: list[Message], length: float, scoring: ScoringConfig, p:
 
     for i, w in enumerate(wins):
         w.unique = len(per_user[i])
-        w.score = w.counted + w.keyword_bonus + scoring.unique_chatter_weight * w.unique
+        w.score = window_score(w.counted, w.keyword_bonus, w.unique, scoring)
         for s, e, reason in mutes:
             if w.start < e and w.start + p.window > s:
                 w.muted = reason
                 break
     return wins
+
+
+def window_score(counted: int, keyword_bonus: float, unique: int, scoring: ScoringConfig) -> float:
+    return counted + keyword_bonus + scoring.unique_chatter_weight * unique
+
+
+def baseline_threshold(score: float, neigh: list[float], p: DetectParams) -> tuple[float, float, float]:
+    """(baseline, threshold, z) for a window score given its neighbouring window scores."""
+    if not neigh:
+        neigh = [0.0]
+    mean = statistics.fmean(neigh)
+    if p.method == "zscore":
+        std = statistics.pstdev(neigh) if len(neigh) > 1 else 0.0
+        std = max(std, 1.0, 0.1 * mean)  # avoid huge z on near-silent stretches
+        return mean, max(mean + p.z * std, p.min_score), (score - mean) / std
+    med = statistics.median(neigh)
+    std = max(statistics.pstdev(neigh) if len(neigh) > 1 else 0.0, 1.0)
+    return med, max(max(med, 1.0) * p.multiplier, p.min_score), (score - mean) / std
 
 
 def find_spikes(wins: list[Window], p: DetectParams) -> None:
@@ -95,53 +114,36 @@ def find_spikes(wins: list[Window], p: DetectParams) -> None:
     scores = [w.score for w in wins]
     for i, w in enumerate(wins):
         neigh = scores[max(0, i - k):i] + scores[i + 1:i + 1 + k]
-        if not neigh:
-            neigh = [0.0]
-        if p.method == "zscore":
-            mean = statistics.fmean(neigh)
-            std = statistics.pstdev(neigh) if len(neigh) > 1 else 0.0
-            std = max(std, 1.0, 0.1 * mean)  # avoid huge z on near-silent stretches
-            w.baseline = mean
-            w.z = (w.score - mean) / std
-            w.threshold = max(mean + p.z * std, p.min_score)
-        else:
-            med = statistics.median(neigh)
-            w.baseline = med
-            w.threshold = max(max(med, 1.0) * p.multiplier, p.min_score)
-            mean = statistics.fmean(neigh)
-            std = max(statistics.pstdev(neigh) if len(neigh) > 1 else 0.0, 1.0)
-            w.z = (w.score - mean) / std
+        w.baseline, w.threshold, w.z = baseline_threshold(w.score, neigh, p)
         w.spike = w.muted is None and w.score >= w.threshold
+
+
+def moment_from_group(group: list[Window], p: DetectParams) -> Moment:
+    peak = max(group, key=lambda w: w.score)
+    return Moment(
+        spike_start=group[0].start,
+        spike_end=group[-1].start + p.window,
+        peak_time=peak.start + p.window / 2,
+        peak_score=peak.score,
+        baseline=peak.baseline,
+        ratio=peak.score / max(peak.baseline, 1.0),
+        z=peak.z,
+        peak_unique=peak.unique,
+    )
 
 
 def merge_moments(wins: list[Window], p: DetectParams) -> list[Moment]:
     moments: list[Moment] = []
     group: list[Window] = []
-
-    def flush():
-        if not group:
-            return
-        peak = max(group, key=lambda w: w.score)
-        base = max(peak.baseline, 1.0)
-        moments.append(Moment(
-            spike_start=group[0].start,
-            spike_end=group[-1].start + p.window,
-            peak_time=peak.start + p.window / 2,
-            peak_score=peak.score,
-            baseline=peak.baseline,
-            ratio=peak.score / base,
-            z=peak.z,
-            peak_unique=peak.unique,
-        ))
-
     for w in wins:
         if not w.spike:
             continue
         if group and w.start - (group[-1].start + p.window) > p.merge_gap:
-            flush()
+            moments.append(moment_from_group(group, p))
             group = []
         group.append(w)
-    flush()
+    if group:
+        moments.append(moment_from_group(group, p))
     return moments
 
 
@@ -179,9 +181,8 @@ def summarize_chat(m: Moment, msgs: list[Message], scoring: ScoringConfig, top_n
     count = 0
     lo = m.spike_start
     hi = m.spike_end
-    for msg in msgs:
-        if msg.t < lo:
-            continue
+    start = bisect.bisect_left(msgs, lo, key=lambda x: x.t)  # msgs are sorted by time
+    for msg in msgs[start:]:
         if msg.t >= hi:
             break
         count += 1

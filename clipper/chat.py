@@ -6,6 +6,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from . import ClipperError
@@ -26,6 +27,7 @@ class VodMeta:
     streamer: str | None = None
     title: str | None = None
     length: float | None = None   # seconds
+    created_at: float | None = None  # stream start, unix time (used to match live clips)
 
 
 @dataclass
@@ -93,6 +95,12 @@ def load_chat(path: Path, vod_id: str) -> tuple[VodMeta, list[dict]]:
     )
     if meta.streamer:
         meta.streamer = meta.streamer.lower()
+    created = video.get("created_at")
+    if created:
+        try:
+            meta.created_at = datetime.fromisoformat(str(created).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
     if meta.length is None or meta.length <= 0:
         # Older chat files: start/end are offsets of the downloaded range
         end = _parse_length(video.get("end"))
@@ -120,6 +128,28 @@ def normalize(body: str) -> str:
     return " ".join(_INVISIBLE.sub("", body).split())
 
 
+def classify(user: str, body: str, bits: int, cfg: FilterConfig) -> str | None:
+    """Why a (normalized) message should be dropped, or None to keep it.
+    Shared by VOD mode and live mode."""
+    if not body:
+        return "empty"
+    if user in cfg.bots:
+        return "bot"
+    if cfg.drop_commands and body.startswith("!"):
+        return "command"
+    if cfg.drop_bits and bits > 0:
+        return "bits"
+    if any(p.search(body) for p in cfg.system_patterns):
+        return "system notice"
+    if any(p.search(body) for p in cfg.prompted_patterns):
+        return "poll vote"
+    if any(p.search(body) for p in cfg.goodbye_patterns):
+        return "goodbye"
+    if cfg.raid_pattern and cfg.raid_pattern.search(body):
+        return "raid message"
+    return None
+
+
 def clean(comments: list[dict], cfg: FilterConfig, window: float,
           length: float | None = None) -> tuple[list[Message], CleanStats]:
     """Drop bots, commands, cheers, system notices and poll votes; work out mute periods
@@ -139,35 +169,19 @@ def clean(comments: list[dict], cfg: FilterConfig, window: float,
         body = normalize(msg.get("body") or "")
         t = float(c.get("content_offset_seconds", 0) or 0)
 
-        if not body:
-            stats.dropped["empty"] += 1
-            continue
-
-        if cfg.gift_pattern:
+        if body and cfg.gift_pattern:
             m = cfg.gift_pattern.search(body)
             if m and int(m.group(1)) >= cfg.gift_min_count:
                 stats.mutes.append((t, t + cfg.gift_mute_seconds, f"gift bomb ({m.group(1)} subs)"))
+        if body and cfg.raid_notice_pattern and cfg.raid_notice_pattern.search(body):
+            stats.mutes.append((t, t + cfg.raid_mute_seconds, "raid"))
 
-        if user in cfg.bots:
-            stats.dropped["bot"] += 1
-            continue
-        if cfg.drop_commands and body.startswith("!"):
-            stats.dropped["command"] += 1
-            continue
-        if cfg.drop_bits and (msg.get("bits_spent") or 0) > 0:
-            stats.dropped["bits"] += 1
-            continue
-        if any(p.search(body) for p in cfg.system_patterns):
-            stats.dropped["system notice"] += 1
-            continue
-        if any(p.search(body) for p in cfg.prompted_patterns):
-            stats.dropped["poll vote"] += 1
-            continue
-        if cfg.raid_pattern and cfg.raid_pattern.search(body):
+        reason = classify(user, body, msg.get("bits_spent") or 0, cfg)
+        if reason == "raid message":
             raid_hits[int(t // window)] += 1
-            stats.dropped["raid message"] += 1
+        if reason:
+            stats.dropped[reason] += 1
             continue
-
         kept.append(Message(t=t, user=user or "?", body=body))
 
     for w, n in sorted(raid_hits.items()):

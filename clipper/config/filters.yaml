@@ -31,7 +31,13 @@ drop_bits: true
 prompted_patterns:
   - "^\\d{1,2}$"          # "1", "2", "69" poll votes
 
-# Ignore the start/end of the VOD (stream intro "hi", outro "WW STREAM" / "gn").
+# Goodbye messages at the end of a stream ("WW STREAM", "gn", "bye chat").
+goodbye_patterns:
+  - "^(w+|gg|good|great|amazing|fire|goated)\\s+(stream|strim)\\b"
+  - "^(gn|goodnight|good night|nightnight|bye+|cya|see (ya|you)|peace)\\b"
+
+# VOD mode only: ignore the start/end of the VOD (stream intro "hi", outro spam).
+# Live mode can't know when the stream will end, so it relies on goodbye_patterns.
 ignore_first_seconds: 0
 ignore_last_seconds: 150
 
@@ -54,6 +60,8 @@ system_patterns:
 raid:
   # "raid", "raiders", or a camelCase channel emote like "speedRaid" — but not "afraid"
   pattern: "\\braid|(?-i:[a-z0-9]Raid)"
+  # A raid announcement mutes chat straight away.
+  notice_pattern: "\\bis raiding with a party of"
   min_messages: 5
   mute_seconds: 90
 

@@ -31,6 +31,11 @@ TOOLS = {
             "  Linux: sudo apt install ffmpeg   (or drop ffmpeg(.exe) in this project's bin/ folder)"
         ),
     },
+    "streamlink": {
+        "names": ["streamlink"],
+        "env": "CLIPPER_STREAMLINK",
+        "install": "streamlink (live mode): pip install streamlink",
+    },
     "yt-dlp": {
         "names": ["yt-dlp"],
         "env": "CLIPPER_YTDLP",

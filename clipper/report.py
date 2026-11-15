@@ -20,7 +20,7 @@ def clip_filename(rank: int, m: Moment) -> str:
     return f"{rank:02d}_{hms(m.clip_start)}_score{int(round(m.peak_score))}.mp4"
 
 
-def moment_record(rank: int, m: Moment, vod_id: str, file: str | None) -> dict:
+def moment_record(rank: int, m: Moment, vod_id: str | None, file: str | None) -> dict:
     return {
         "rank": rank,
         "file": file,
@@ -40,7 +40,7 @@ def moment_record(rank: int, m: Moment, vod_id: str, file: str | None) -> dict:
         "messages_in_spike": m.messages,
         "keyword_hits": m.keyword_hits,
         "top_messages": [{"text": t, "count": c} for t, c in m.top_messages],
-        "vod_link": f"https://www.twitch.tv/videos/{vod_id}?t={hms(m.clip_start)}",
+        "vod_link": f"https://www.twitch.tv/videos/{vod_id}?t={hms(m.clip_start)}" if vod_id else None,
     }
 
 
@@ -66,7 +66,7 @@ def write_reports(out_dir: Path, meta: VodMeta, params: DetectParams, stats: Cle
     with open(jpath, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
-    cols = ["rank", "file", "clip_start_hms", "clip_start", "clip_end", "duration", "peak_time_hms",
+    cols = ["rank", "file", "clipped_live", "clock_time", "clip_start_hms", "clip_start", "clip_end", "duration", "peak_time_hms",
             "peak_score", "baseline", "ratio", "peak_unique_chatters", "messages_in_spike",
             "top_messages", "vod_link"]
     # utf-8-sig so Excel shows emoji correctly

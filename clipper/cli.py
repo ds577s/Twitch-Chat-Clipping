@@ -1,4 +1,8 @@
-"""Command-line entry point: clipper <VOD URL | ID | list.txt> [options]"""
+"""Command-line entry point.
+
+  clipper <VOD URL | ID | list.txt> [options]     VOD mode
+  clipper live <channel> [options]                live mode
+"""
 
 from __future__ import annotations
 
@@ -13,16 +17,8 @@ from . import config, facecam, report, tools, video
 from .detect import DetectParams, detect
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="clipper",
-        description="Find the best moments in Twitch VODs using chat spikes, and cut vertical 9:16 clips.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    p.add_argument("inputs", nargs="+", metavar="url",
-                   help="Twitch VOD URL or ID. Several allowed, or a .txt file with one per line (batch mode).")
-    p.add_argument("--out", default="./clips", help="Output folder")
-
+# --------------------------------------------------------------------------- shared options
+def _add_detection_args(p: argparse.ArgumentParser, live: bool) -> None:
     g = p.add_argument_group("detection")
     g.add_argument("--window", type=float, default=10, help="Bucket size in seconds")
     g.add_argument("--method", choices=["ratio", "zscore"], default="ratio",
@@ -32,7 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--baseline", type=float, default=300, help="Seconds of surrounding chat used for the baseline")
     g.add_argument("--min-score", type=float, default=10, help="A spike must also reach at least this score")
     g.add_argument("--merge-gap", type=float, default=30, help="Merge spikes closer than this many seconds")
-    g.add_argument("--max-clips", type=int, default=15, help="Keep the top N moments")
+    if live:
+        g.add_argument("--max-clips", type=int, default=0, help="Stop clipping after N clips (0 = no limit)")
+        g.add_argument("--max-per-hour", type=int, default=0, help="At most N clips per hour of stream (0 = no limit)")
+    else:
+        g.add_argument("--max-clips", type=int, default=15, help="Keep the top N moments")
     g.add_argument("--rank-by", choices=["score", "ratio"], default="score",
                    help="Rank by peak score, or by how far above its local baseline the spike is")
     g.add_argument("--per-user-cap", type=int, default=None,
@@ -44,29 +44,75 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--min-len", type=float, default=15, help="Minimum clip length (s)")
     g.add_argument("--max-len", type=float, default=60, help="Maximum clip length (s)")
 
+
+def _add_video_args(p: argparse.ArgumentParser, live: bool) -> None:
     g = p.add_argument_group("video")
     g.add_argument("--layout", choices=["center", "stacked"], default="center",
                    help="center: center crop. stacked: facecam on top, gameplay below")
     g.add_argument("--streamer", default="auto", help="Key into streamers.yaml for the facecam box (auto = channel name)")
-    g.add_argument("--quality", default=None, help="e.g. 1080p60, 720p60. Default: source")
-    g.add_argument("--downloader", choices=["auto", "twitchdownloader", "yt-dlp"], default="auto",
-                   help="Segment downloader (auto tries TwitchDownloaderCLI then yt-dlp)")
-    g.add_argument("--keep-raw", action="store_true", help="Keep the unprocessed downloaded segments")
+    if live:
+        g.add_argument("--quality", default="best", help="Stream quality: best, 1080p60, 720p60, ...")
+    else:
+        g.add_argument("--quality", default=None, help="e.g. 1080p60, 720p60. Default: source")
+        g.add_argument("--downloader", choices=["auto", "twitchdownloader", "yt-dlp"], default="auto",
+                       help="Segment downloader (auto tries TwitchDownloaderCLI then yt-dlp)")
+    g.add_argument("--keep-raw", action="store_true", help="Keep the unprocessed downloaded/recorded video")
     g.add_argument("--oauth", default=os.environ.get("TWITCH_OAUTH"),
-                   help="Twitch OAuth token for sub-only VODs (or set TWITCH_OAUTH)")
+                   help="Twitch OAuth token for sub-only content (or set TWITCH_OAUTH)")
 
-    g = p.add_argument_group("misc")
-    g.add_argument("--dry-run", action="store_true", help="Only write the report; download no video")
+
+def _add_config_args(g) -> None:
     g.add_argument("--plot", action="store_true", help="Save chat_activity.png with spikes marked (needs matplotlib)")
-    g.add_argument("--refresh-chat", action="store_true", help="Re-download chat even if cached")
-    g.add_argument("--chat-file", type=Path, help="Use this local chat JSON instead of downloading (single VOD only)")
     g.add_argument("--keywords", type=Path, help="Custom keywords.yaml")
     g.add_argument("--filters", type=Path, help="Custom filters.yaml")
     g.add_argument("--streamers", type=Path, help="Custom streamers.yaml")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="clipper",
+        description="Find the best moments in Twitch VODs using chat spikes, and cut vertical 9:16 clips. "
+                    "For live streams, run:  clipper live <channel>",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("inputs", nargs="+", metavar="url",
+                   help="Twitch VOD URL or ID. Several allowed, or a .txt file with one per line (batch mode).")
+    p.add_argument("--out", default="./clips", help="Output folder")
+    _add_detection_args(p, live=False)
+    _add_video_args(p, live=False)
+    g = p.add_argument_group("misc")
+    g.add_argument("--dry-run", action="store_true", help="Only write the report; download no video")
+    g.add_argument("--refresh-chat", action="store_true", help="Re-download chat even if cached")
+    g.add_argument("--chat-file", type=Path, help="Use this local chat JSON instead of downloading (single VOD only)")
+    _add_config_args(g)
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p
 
 
+def build_live_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="clipper live",
+        description="Watch a live stream's chat and cut a vertical clip about a minute after each chat spike.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("channel", help="Twitch channel name or URL (e.g. ishowspeed or https://twitch.tv/ishowspeed)")
+    p.add_argument("--out", default="./clips", help="Output folder")
+    _add_detection_args(p, live=True)
+    _add_video_args(p, live=True)
+    g = p.add_argument_group("live")
+    g.add_argument("--buffer", type=float, default=300, help="Seconds of video kept on disk")
+    g.add_argument("--video-delay", type=float, default=0,
+                   help="Shift clips this many seconds later if your video lags behind chat")
+    g.add_argument("--vod-after", action="store_true",
+                   help="When the stream ends, run VOD mode on its VOD and clip the best moments not already clipped live")
+    g.add_argument("--vod-max-clips", type=int, default=15, help="Top N moments for --vod-after")
+    g.add_argument("--stop-after", type=float, default=0,
+                   help="Stop after this many minutes of stream (0 = until the stream ends or Ctrl-C)")
+    _add_config_args(g)
+    return p
+
+
+# --------------------------------------------------------------------------- VOD mode
 def expand_inputs(inputs: list[str]) -> list[str]:
     out: list[str] = []
     for item in inputs:
@@ -83,7 +129,24 @@ def expand_inputs(inputs: list[str]) -> list[str]:
     return out
 
 
-def process_vod(vod_input: str, args, scoring, filters, found: dict) -> Path:
+def _mark_clipped_live(moments, records, created_at: float, live_clips) -> int:
+    """Mark VOD moments that live mode already clipped, so they aren't rendered twice."""
+    n = 0
+    for m, rec in zip(moments, records):
+        a, b = created_at + m.clip_start, created_at + m.clip_end
+        for la, lb, fname in live_clips:
+            la, lb = la - 4.0, lb - 4.0  # live video arrives a few seconds after broadcast
+            inter = min(b, lb) - max(a, la)
+            if inter > 0.3 * min(b - a, lb - la):
+                rec["clipped_live"] = fname
+                rec["file"] = None
+                n += 1
+                break
+    return n
+
+
+def process_vod(vod_input: str, args, scoring, filters, found: dict,
+                live_clips: list | None = None, must_cover: float | None = None) -> Path:
     vod_id = chatmod.parse_vod_id(vod_input)
     vod_dir = Path(args.out) / vod_id
     vod_dir.mkdir(parents=True, exist_ok=True)
@@ -105,6 +168,9 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict) -> Path:
     meta, comments = chatmod.load_chat(chat_path, vod_id)
     if not comments:
         raise ClipperError(f"[{vod_id}] chat file has no messages.")
+    if must_cover and meta.created_at and meta.created_at + (meta.length or 0) < must_cover - 60:
+        raise ClipperError(f"[{vod_id}] the channel's newest VOD ended before the live session started, so it "
+                           "isn't this stream. Past broadcasts may be off, or the VOD isn't published yet.")
 
     # 2-5. Clean, score, detect, bound
     params = DetectParams(
@@ -118,6 +184,10 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict) -> Path:
 
     records = [report.moment_record(i, m, vod_id, None if args.dry_run else report.clip_filename(i, m))
                for i, m in enumerate(moments, 1)]
+    if live_clips and meta.created_at:
+        n = _mark_clipped_live(moments, records, meta.created_at, live_clips)
+        if n:
+            print(f"[{vod_id}] {n} of these moments were already clipped live; skipping them")
     report.print_summary(meta, stats, records)
     jpath, _ = report.write_reports(vod_dir, meta, params, stats, records)
 
@@ -146,11 +216,12 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict) -> Path:
                   f"first one is used for every clip. pip install \"opencv-python-headless<5\" to auto-pick.")
 
     raw_dir = vod_dir / "raw"
+    todo = [(i, m, rec) for i, (m, rec) in enumerate(zip(moments, records), 1) if rec["file"]]
     failed = 0
-    for i, (m, rec) in enumerate(zip(moments, records), 1):
+    for n, (i, m, rec) in enumerate(todo, 1):
         dest = vod_dir / rec["file"]
         raw = raw_dir / f"{i:02d}_{int(m.clip_start)}-{int(m.clip_end)}.mp4"
-        print(f"[{vod_id}] clip {i}/{len(moments)}: {rec['clip_start_hms']} ({rec['duration']:.0f}s)")
+        print(f"[{vod_id}] clip {n}/{len(todo)}: {rec['clip_start_hms']} ({rec['duration']:.0f}s)")
         try:
             if not (raw.exists() and raw.stat().st_size > 0):
                 video.download_segment(vod_id, m.clip_start, m.clip_end, raw, found,
@@ -161,7 +232,7 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict) -> Path:
                 cam = candidates[idx] if idx is not None else None
                 rec["facecam"] = idx + 1 if idx is not None else None  # 1-based, like the console
                 print("  facecam: " + (f"position {idx + 1} (face in {hits[idx]}/{facecam.SAMPLES} frames)"
-                                        if idx is not None else "no face found in any box, using center crop"))
+                                       if idx is not None else "no face found in any box, using center crop"))
             layout = "stacked" if cam else "center"
             rec["layout"] = layout
             video.render_vertical(raw, dest, found["ffmpeg"], layout, cam)
@@ -176,19 +247,30 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict) -> Path:
         raw_dir.rmdir()
 
     report.write_reports(vod_dir, meta, params, stats, records)
-    done = len(moments) - failed
-    print(f"[{vod_id}] {done}/{len(moments)} clips written to {vod_dir}")
+    done = len(todo) - failed
+    print(f"[{vod_id}] {done}/{len(todo)} clips written to {vod_dir}")
     if failed and not done:
         raise ClipperError(f"[{vod_id}] every clip failed; see errors above.")
     return vod_dir
 
 
+# --------------------------------------------------------------------------- entry point
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(errors="replace")  # emoji in chat on Windows consoles
+            stream.reconfigure(errors="replace", line_buffering=True)  # emoji on Windows consoles
         except (AttributeError, ValueError):
             pass
+
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "live":
+        from . import live
+        args = build_live_parser().parse_args(argv[1:])
+        try:
+            return live.run(args)
+        except ClipperError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
 
     args = build_parser().parse_args(argv)
     try:

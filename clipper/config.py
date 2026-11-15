@@ -64,9 +64,11 @@ class FilterConfig:
     drop_bits: bool
     system_patterns: list[re.Pattern]
     prompted_patterns: list[re.Pattern]
+    goodbye_patterns: list[re.Pattern]
     ignore_first_seconds: float
     ignore_last_seconds: float
     raid_pattern: re.Pattern | None
+    raid_notice_pattern: re.Pattern | None
     raid_min_messages: int
     raid_mute_seconds: float
     gift_pattern: re.Pattern | None
@@ -101,9 +103,12 @@ def load_filters(path: Path | None = None) -> FilterConfig:
         drop_bits=bool(d.get("drop_bits", True)),
         system_patterns=[re.compile(p, re.IGNORECASE) for p in d.get("system_patterns", [])],
         prompted_patterns=[re.compile(p, re.IGNORECASE) for p in d.get("prompted_patterns", []) or []],
+        goodbye_patterns=[re.compile(p, re.IGNORECASE) for p in d.get("goodbye_patterns", []) or []],
         ignore_first_seconds=float(d.get("ignore_first_seconds", 0) or 0),
         ignore_last_seconds=float(d.get("ignore_last_seconds", 0) or 0),
         raid_pattern=re.compile(raid["pattern"], re.IGNORECASE) if raid.get("pattern") else None,
+        raid_notice_pattern=(re.compile(raid["notice_pattern"], re.IGNORECASE)
+                             if raid.get("notice_pattern") else None),
         raid_min_messages=int(raid.get("min_messages", 5)),
         raid_mute_seconds=float(raid.get("mute_seconds", 90)),
         gift_pattern=re.compile(gift["pattern"], re.IGNORECASE) if gift.get("pattern") else None,
