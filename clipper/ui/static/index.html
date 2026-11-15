@@ -9,26 +9,33 @@
 <script>window.CLIPPER_TOKEN = "__CLIPPER_TOKEN__";</script>
 </head>
 <body>
-<header class="top">
-  <div class="brand">
-    <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><path d="M5 22h5l3-9 4 13 3-8 2 4h5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/></svg>
-    <span>Chat Spike Clipper</span>
-  </div>
-  <nav class="tabs" role="tablist">
-    <button data-tab="vod" class="active">VODs</button>
-    <button data-tab="live">Live</button>
-    <button data-tab="setup">Setup</button>
-  </nav>
-  <div class="top-right"><button id="toolsPill" class="pill" data-tab="setup"></button></div>
-</header>
-
 <div class="layout">
-  <aside class="sidebar">
-    <div class="side-head">
-      <span>Runs</span>
-      <button id="openOut" class="link">Open clips folder</button>
-    </div>
+  <aside class="sidebar glass">
+    <nav class="nav" role="tablist" aria-label="Sections">
+      <button data-tab="vod" class="nav-item active">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M3 15h18M8 4v16M16 4v16"/></svg>
+        <span>VODs</span><i class="nav-dot" id="dot-vod" hidden></i>
+      </button>
+      <button data-tab="live" class="nav-item">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 5a10 10 0 0 1 0 14M5 19A10 10 0 0 1 5 5"/></svg>
+        <span>Live</span><i class="nav-dot" id="dot-live" hidden></i>
+      </button>
+      <button data-tab="setup" class="nav-item">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+        <span>Setup</span>
+      </button>
+    </nav>
+
+    <div class="side-head"><span>Runs</span></div>
     <div id="runList" class="run-list"><div class="empty">Nothing yet.</div></div>
+
+    <div class="side-foot">
+      <button id="openOut" class="nav-item">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v6.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/></svg>
+        <span>Open clips folder</span>
+      </button>
+      <button id="toolsPill" class="pill" data-tab="setup"></button>
+    </div>
   </aside>
 
   <main>

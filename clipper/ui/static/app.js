@@ -160,7 +160,7 @@ function readForm(mode) {
 // --------------------------------------------------------------------------- tabs & sidebar
 function setTab(tab) {
   S.tab = tab;
-  $$('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+  $$('.nav .nav-item').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${tab}`));
   if (tab === 'setup') loadSetup();
   store('clipper.tab', tab);
@@ -193,6 +193,7 @@ function renderSidebar() {
   const list = $('#runList');
   const running = Object.values(S.jobs).filter((j) => j.running).sort((a, b) => b.started - a.started);
   const cur = S.sel[S.tab] || {};
+  for (const m of ['vod', 'live']) $(`#dot-${m}`).hidden = !running.some((j) => j.mode === m);
   let html = '';
   if (running.length) {
     html += running.map((j) => {
