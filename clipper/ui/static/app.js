@@ -53,7 +53,7 @@ const S = {
   sessions: [],
   jobs: {},                       // id -> summary
   jc: {},                         // id -> {log, events, logNext, evNext, d}
-  sel: { vod: { job: null, session: null }, live: { job: null, session: null } },
+  sel: { vod: { job: null, session: null }, live: { job: null, session: null }, captions: { job: null, session: null } },
   sess: {},                       // name -> session data
   unpicked: {},                   // session name -> Set of ranks not to cut
   offline: false,
@@ -96,22 +96,24 @@ const F = {
   video_delay: { label: 'Video delay (s)', type: 'num', step: 1, help: 'If clips start too early, the video lags chat. Shift clips later by this much.' },
   buffer: { label: 'Video kept on disk (s)', type: 'num', step: 30, min: 120 },
   vod_max_clips: { label: 'VOD follow-up max clips', type: 'num', step: 1, min: 1 },
+  captions: { label: 'Add captions', type: 'bool',
+    help: 'Burns speech captions into each clip, transcribed on this PC. Style on the Captions page. Adds roughly 10–30 s per clip.' },
 };
 const LAYOUT_OPTS = {
   vod: {
-    basic: ['multiplier', 'max_clips_vod', 'layout', 'pre_roll', 'post_roll'],
+    basic: ['multiplier', 'max_clips_vod', 'layout', 'pre_roll', 'post_roll', 'captions'],
     adv: ['min_score', 'merge_gap', 'min_len', 'max_len', 'rank_by', 'method', 'z', 'window', 'baseline',
       'per_user_cap', 'quality_vod', 'streamer', 'downloader', 'refresh_chat', 'keep_raw'],
   },
   live: {
-    basic: ['multiplier', 'min_score', 'layout', 'max_per_hour', 'stop_after', 'vod_after'],
+    basic: ['multiplier', 'min_score', 'layout', 'max_per_hour', 'stop_after', 'captions', 'vod_after'],
     adv: ['max_clips_live', 'merge_gap', 'pre_roll', 'post_roll', 'min_len', 'max_len', 'video_delay', 'method', 'z',
       'quality_live', 'streamer', 'vod_max_clips', 'buffer', 'window', 'baseline', 'per_user_cap', 'keep_raw'],
   },
 };
 
-function fieldHTML(mode, id) {
-  const f = F[id], k = f.k || id;
+function fieldHTML(mode, id, defs = F) {
+  const f = defs[id], k = f.k || id;
   const name = `${mode}-${k}`;
   const help = f.help ? `<span class="help" title="${esc(f.help)}">?</span>` : '';
   if (f.type === 'bool') {
@@ -120,6 +122,8 @@ function fieldHTML(mode, id) {
   let input;
   if (f.type === 'select') {
     input = `<select data-k="${k}" id="${name}">${f.choices.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>`;
+  } else if (f.type === 'color') {
+    input = `<input type="color" data-k="${k}" id="${name}">`;
   } else if (f.type === 'num') {
     input = `<input type="number" data-k="${k}" id="${name}" step="${f.step ?? 'any'}"${f.min !== undefined ? ` min="${f.min}"` : ''}${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ''}>`;
   } else {
@@ -163,13 +167,19 @@ function setTab(tab) {
   $$('.nav .nav-item').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${tab}`));
   if (tab === 'setup') loadSetup();
+  if (tab === 'captions') loadCaptions();
   store('clipper.tab', tab);
   renderSidebar();
   renderAll();
 }
 
 function jobForSession(name) {
-  return Object.values(S.jobs).filter((j) => j.sessions.includes(name)).sort((a, b) => b.started - a.started)[0] || null;
+  return Object.values(S.jobs).filter((j) => j.mode !== 'captions' && j.sessions.includes(name))
+    .sort((a, b) => b.started - a.started)[0] || null;
+}
+
+function captionJobFor(name) {
+  return Object.values(S.jobs).find((j) => j.running && j.mode === 'captions' && j.sessions.includes(name)) || null;
 }
 
 function selectSession(name, mode) {
@@ -193,7 +203,7 @@ function renderSidebar() {
   const list = $('#runList');
   const running = Object.values(S.jobs).filter((j) => j.running).sort((a, b) => b.started - a.started);
   const cur = S.sel[S.tab] || {};
-  for (const m of ['vod', 'live']) $(`#dot-${m}`).hidden = !running.some((j) => j.mode === m);
+  for (const m of ['vod', 'live', 'captions']) $(`#dot-${m}`).hidden = !running.some((j) => j.mode === m);
   let html = '';
   if (running.length) {
     html += running.map((j) => {
@@ -266,7 +276,7 @@ async function pollJob(id) {
       case 'session': {
         // A VOD run shows its latest VOD; a live run keeps showing the live session even
         // when its VOD follow-up starts (that one gets a button instead).
-        if (S.sel[s.mode].job === id && (s.mode === 'vod' || ev.mode === 'live')) S.sel[s.mode].session = ev.name;
+        if (S.sel[s.mode].job === id && (s.mode !== 'live' || ev.mode === 'live')) S.sel[s.mode].session = ev.name;
         reload = true; break;
       }
     }
@@ -278,7 +288,7 @@ async function pollJob(id) {
     else if (!s.stop_requested) toast(`${s.title}: stopped with an error. See the log.`, true);
   }
   if (reload) {
-    for (const name of s.sessions) if (S.sel.vod.session === name || S.sel.live.session === name) scheduleLoad(name);
+    for (const name of s.sessions) if (Object.values(S.sel).some((x) => x.session === name)) scheduleLoad(name);
   }
   if (c.d.chat.length > 400) c.d.chat.splice(0, c.d.chat.length - 300);
 }
@@ -340,7 +350,7 @@ function renderJob(mode) {
       <div class="job-head"><h3>${esc(j.title)}</h3><span class="job-state"></span><span class="spacer"></span>
         <button class="btn small" data-act="stop">Stop</button>
         <button class="btn small danger" data-act="kill" title="Ends it right away. Clips being made are lost.">Force stop</button></div>
-      ${mode === 'vod' ? '<div class="progress" hidden><div></div></div>' : `
+      ${mode !== 'live' ? '<div class="progress" hidden><div></div></div>' : `
       <div class="stats">
         <div class="stat"><div class="v" data-s="elapsed">–</div><div class="l">Watching for</div></div>
         <div class="stat"><div class="v" data-s="rate">–</div><div class="l">Chat messages / min</div></div>
@@ -374,7 +384,8 @@ function renderJob(mode) {
       if (j.stop_requested && d.state !== 'finishing') st = '<span class="spin"></span>Stopping…';
     } else {
       const p = d.progress;
-      const txt = p ? (p.working ? `Cutting clip ${p.n + 1} of ${p.total}` : `Cut ${p.n} of ${p.total}`) : (d.stage || (j.argv.includes('--dry-run') ? 'Ranking moments' : 'Working'));
+      const verb = mode === 'captions' ? ['Adding captions to clip', 'Captioned'] : ['Cutting clip', 'Cut'];
+      const txt = p ? (p.working ? `${verb[0]} ${p.n + 1} of ${p.total}` : `${verb[1]} ${p.n} of ${p.total}`) : (d.stage || (j.argv.includes('--dry-run') ? 'Ranking moments' : 'Working'));
       st = `<span class="spin"></span>${esc(j.stop_requested ? 'Stopping after this clip…' : txt)}`;
     }
   } else if (j.returncode === 0) {
@@ -397,7 +408,7 @@ function renderJob(mode) {
     eb.hidden = false;
   } else eb.hidden = true;
 
-  if (mode === 'vod') {
+  if (mode !== 'live') {
     const pr = $('.progress', box);
     if (d.progress && d.progress.total) {
       pr.hidden = false;
@@ -465,7 +476,8 @@ function renderSession(mode) {
   }
   const r = data.report;
   const job = S.sel[mode].job ? S.jobs[S.sel[mode].job] : null;
-  const busy = job && job.running;
+  const capJob = captionJobFor(name);
+  const busy = (job && job.running) || !!capJob;
   if (box.dataset.name !== name) {
     box.dataset.name = name;
     box.innerHTML = `<div class="card session">
@@ -495,6 +507,7 @@ function renderSession(mode) {
     `sensitivity ${r.params.multiplier}${r.params.method === 'zscore' ? ` (z ${r.params.z})` : ''}`,
   ].filter(Boolean).join(' · ');
   const acts = [`<button class="btn small" data-act="open">Open folder</button>`];
+  if (r.clips.some((c) => c.file && data.files[c.file]) && !busy) acts.push(`<button class="btn small" data-act="captions">Add captions</button>`);
   if (!live) acts.push(`<a class="btn small" href="https://www.twitch.tv/videos/${esc(r.vod_id)}" target="_blank" rel="noopener">Watch VOD on Twitch ↗</a>`);
   const follow = live && job && job.sessions.find((s) => s !== name);
   if (follow) acts.push(`<button class="btn small" data-act="follow">VOD follow-up: ${esc(follow)} →</button>`);
@@ -505,6 +518,8 @@ function renderSession(mode) {
     $('[data-act=open]', sa).onclick = () => api('/api/open', { method: 'POST', body: { name } }).catch((e) => toast(e.message, true));
     const fb = $('[data-act=follow]', sa);
     if (fb) fb.onclick = () => selectSession(follow, 'vod');
+    const cb = $('[data-act=captions]', sa);
+    if (cb) cb.onclick = () => { CAP.run = name; setTab('captions'); };
   }
 
   // chart
@@ -520,7 +535,8 @@ function renderSession(mode) {
   // moments
   const clips = r.clips;
   const unpicked = (S.unpicked[name] ||= new Set());
-  const clipStatus = job ? jc(job.id).d.clips : {};
+  const clipStatus = { ...(job ? jc(job.id).d.clips : {}) };
+  if (capJob) for (const [rank, st] of Object.entries(jc(capJob.id).d.clips)) clipStatus[rank] = st === 'working' ? 'captioning' : clipStatus[rank];
   $('.moments-head h3', box).textContent = clips.length
     ? `${clips.length} moment${clips.length > 1 ? 's' : ''}${live ? ' clipped' : ''}`
     : (live ? 'No clips yet' : 'No moments found. Try a lower sensitivity or minimum spike score.');
@@ -541,12 +557,13 @@ function renderSession(mode) {
   clips.forEach((c, i) => {
     const mtime = c.file ? data.files[c.file] : null;
     const status = clipStatus[c.rank];
-    const sig = JSON.stringify([c.file, mtime, status, c.error, c.clipped_live, c.not_selected, unpicked.has(c.rank), c.peak_time, live, c.facecam, !!busy]);
+    const sig = JSON.stringify([c.file, mtime, status, c.error, c.clipped_live, c.not_selected, unpicked.has(c.rank), c.peak_time, live, c.facecam, !!busy,
+      c.captions, c.captions_error, (data.subs || []).includes(c.captions?.srt)]);
     const key = `m-${c.rank}`;
     seen.add(key);
     let el = grid.querySelector(`[data-key="${key}"]`);
     if (el && el.dataset.sig === sig) { if (grid.children[i] !== el) grid.insertBefore(el, grid.children[i] || null); return; }
-    const html = momentHTML(name, c, mtime, status, live, unpicked.has(c.rank), busy);
+    const html = momentHTML(name, c, mtime, status, live, unpicked.has(c.rank), busy, data.subs || []);
     const tmp = document.createElement('div');
     tmp.innerHTML = html;
     const fresh = tmp.firstElementChild;
@@ -558,9 +575,11 @@ function renderSession(mode) {
   [...grid.children].forEach((el) => { if (!seen.has(el.dataset.key)) el.remove(); });
 }
 
-function momentHTML(session, c, mtime, status, live, unpicked, busy) {
+function momentHTML(session, c, mtime, status, live, unpicked, busy, subs) {
   let media;
-  if (c.file && mtime) {
+  if (status === 'captioning') {
+    media = `<div class="ph"><span class="spin"></span>Adding captions…</div>`;
+  } else if (c.file && mtime) {
     media = `<video src="/media/${encodeURIComponent(session)}/${encodeURIComponent(c.file)}?v=${mtime}" controls preload="metadata" playsinline></video>`;
   } else if (busy && (status === 'working' || (live && c.file && !c.error && status !== 'failed'))) {
     media = `<div class="ph"><span class="spin"></span>Cutting…</div>`;
@@ -578,6 +597,12 @@ function momentHTML(session, c, mtime, status, live, unpicked, busy) {
   links.push(`<span>${Math.round(c.duration)}s clip</span>`);
   if (c.layout === 'stacked') links.push(`<span>facecam ${c.facecam ?? ''}</span>`);
   else if (c.layout === 'center' && c.facecam === null) links.push('<span>no face found, center crop</span>');
+  if (c.captions && c.file && mtime) {
+    links.push(c.captions.words ? '<span class="cc" title="Captions burned in">CC</span>' : '<span>no speech, no captions</span>');
+    if (c.captions.srt && subs.includes(c.captions.srt)) links.push(`<a href="/media/${encodeURIComponent(session)}/${encodeURIComponent(c.captions.srt)}" download>subtitles</a>`);
+  } else if (c.captions_error && c.file) {
+    links.push(`<span class="cc-err" title="${esc(c.captions_error)}">captions failed</span>`);
+  }
   const pick = !live && !c.clipped_live
     ? `<label class="pick"><input type="checkbox"${unpicked ? '' : ' checked'}>cut</label>` : '';
   return `<div class="moment${unpicked && !live ? ' unpicked' : ''}" id="moment-${esc(session)}-${c.rank}">
@@ -604,7 +629,7 @@ async function cutSelected(name) {
     min_score: p.min_score, merge_gap: p.merge_gap, pre_roll: p.pre_roll, post_roll: p.post_roll,
     min_len: p.min_len, max_len: p.max_len, max_clips: p.max_clips, rank_by: p.rank_by,
     layout: form.layout, quality: form.quality, streamer: form.streamer, downloader: form.downloader,
-    per_user_cap: form.per_user_cap, keep_raw: form.keep_raw,
+    per_user_cap: form.per_user_cap, keep_raw: form.keep_raw, captions: form.captions,
     only: ranks.length === r.clips.length ? undefined : ranks.join(','),
   };
   const j = await startJob('vod', { inputs: [r.vod_id], options });
@@ -768,6 +793,9 @@ function renderAll() {
   if (S.tab === 'vod' || S.tab === 'live') {
     renderJob(S.tab);
     renderSession(S.tab);
+  } else if (S.tab === 'captions') {
+    renderJob('captions');
+    renderCapRuns();
   }
 }
 
@@ -1013,6 +1041,237 @@ function loadSetup() {
   requestAnimationFrame(fcDraw);
 }
 
+// --------------------------------------------------------------------------- captions page
+const CF = {
+  model: { label: 'Speech model', type: 'select',
+    choices: [['tiny', 'Tiny (fastest, rough)'], ['base', 'Base (fast)'], ['small', 'Small (recommended)'],
+      ['medium', 'Medium (more accurate, slower)'], ['large-v3', 'Large v3 (most accurate, slowest)'], ['turbo', 'Turbo (accurate, for fast PCs)']],
+    help: 'Downloaded once, the first time it\'s used: tiny 75 MB, base 145 MB, small 480 MB, medium 1.5 GB, turbo 1.6 GB, large 3 GB.' },
+  language: { label: 'Language', type: 'select',
+    choices: [['auto', 'Detect for each clip'], ['en', 'English'], ['es', 'Spanish'], ['pt', 'Portuguese'], ['fr', 'French'], ['de', 'German'],
+      ['it', 'Italian'], ['nl', 'Dutch'], ['pl', 'Polish'], ['tr', 'Turkish'], ['ru', 'Russian'], ['ar', 'Arabic'], ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese']],
+    help: 'Pick it when you know it. Detection can be fooled by loud game audio, or by a clip where someone speaks another language.' },
+  device: { label: 'Run on', type: 'select', choices: [['auto', 'GPU if it works, else CPU'], ['cpu', 'CPU'], ['cuda', 'NVIDIA GPU']] },
+  words_per_caption: { label: 'Words at a time', type: 'num', step: 1, min: 1 },
+  font: { label: 'Font', type: 'text', placeholder: 'Arial Black', help: 'Any font installed on this PC, e.g. Arial Black, Impact, Segoe UI Black.' },
+  size: { label: 'Text size', type: 'num', step: 2, min: 30 },
+  color: { label: 'Text color', type: 'color' },
+  highlight: { label: 'Spoken word color', type: 'color' },
+  outline: { label: 'Outline', type: 'num', step: 1, min: 0 },
+  position: { label: 'Position', type: 'select',
+    choices: [['auto', 'Auto'], ['top', 'Top'], ['middle', 'Middle'], ['bottom', 'Bottom']],
+    help: 'Auto: on the line between the facecam and the gameplay, or in the lower middle with center crop. Bottom stays above where TikTok and Shorts put their own buttons.' },
+  uppercase: { label: 'ALL CAPS', type: 'bool' },
+  mask_swears: { label: 'Mask swear words (f***)', type: 'bool' },
+};
+const CAP = { info: null, saved: null, savedForm: '', run: null, built: false, layout: 'stacked', frame: null, frameKey: null, t0: performance.now(), raf: 0 };
+const CAP_SAMPLE = 'no way he actually hit that shot chat is going crazy right now';
+
+async function loadCaptions() {
+  if (!CAP.built) {
+    CAP.built = true;
+    $('#capOpts').innerHTML = Object.keys(CF).map((id) => fieldHTML('captions', id, CF)).join('');
+    $$('#capOpts [data-k], #capVocab, #capReplace').forEach((el) => {
+      el.addEventListener('input', capChanged);
+      el.addEventListener('change', capChanged);
+    });
+    $$('#capPrevLayout button').forEach((b) => { b.onclick = () => capSetLayout(b.dataset.l); });
+    $('#capSave').onclick = capSave;
+    $('#capRevert').onclick = () => { capFill(CAP.saved); capChanged(); };
+    $('#capRun').onchange = () => { CAP.run = $('#capRun').value; CAP.frameKey = null; renderCapRuns(); };
+    $('#capGo').onclick = capGo;
+  }
+  try {
+    CAP.info = await api('/api/captions');
+    if (!CAP.saved || JSON.stringify(capRead()) === CAP.savedForm) { CAP.saved = CAP.info.config; capFill(CAP.saved); }
+    renderCapStatus();
+  } catch (e) { toast(e.message, true); }
+  renderCapRuns();
+  capAnimate();
+}
+
+function capRead() {
+  const replace = {};
+  for (const line of $('#capReplace').value.split('\n')) {
+    const m = line.split(/\s*(?:=|->|→)\s*/);
+    if (m.length >= 2 && m[0].trim() && m[1].trim()) replace[m[0].trim()] = m.slice(1).join(' ').trim();
+  }
+  return { ...readForm('captions'), vocabulary: $('#capVocab').value.split('\n').map((s) => s.trim()).filter(Boolean), replace };
+}
+
+function capFill(cfg) {
+  if (!cfg) return;
+  fillForm('captions', cfg);
+  $('#capVocab').value = (cfg.vocabulary || []).join('\n');
+  $('#capReplace').value = Object.entries(cfg.replace || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
+  CAP.savedForm = JSON.stringify(capRead());
+}
+
+function capChanged() {
+  const dirty = JSON.stringify(capRead()) !== CAP.savedForm;
+  $('#capPath').textContent = dirty ? 'Unsaved changes' : (CAP.info?.path || '');
+}
+
+async function capSave() {
+  try {
+    CAP.info = await api('/api/captions', { method: 'POST', body: { config: { ...CAP.saved, ...capRead() } } });
+    CAP.saved = CAP.info.config;
+    capFill(CAP.saved);
+    capChanged();
+    renderCapStatus();
+    toast('Caption settings saved. They apply to the next clips you cut or caption.');
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderCapStatus() {
+  const i = CAP.info;
+  if (!i) return;
+  const box = $('#capStatus');
+  if (!i.available) {
+    box.innerHTML = `<div class="cap-missing"><b>faster-whisper isn't installed yet.</b> In a terminal, in the project folder, run:
+      <pre>${esc(i.install)}</pre>Then restart the dashboard.</div>`;
+  } else {
+    const where = i.gpu === 'ready' ? 'NVIDIA GPU' : i.gpu === 'no-libs' ? 'CPU (your NVIDIA GPU needs CUDA libraries first)' : 'CPU';
+    box.innerHTML = `<span class="pill"><span class="dot"></span>faster-whisper ready</span>
+      <span class="pill">Model: ${esc(i.config.model)}</span><span class="pill">Runs on: ${esc(where)}</span>`;
+  }
+  capChanged();
+}
+
+function capSetLayout(l) {
+  CAP.layout = l;
+  $$('#capPrevLayout button').forEach((x) => x.classList.toggle('active', x.dataset.l === l));
+}
+
+function renderCapRuns() {
+  if (S.tab !== 'captions' || !CAP.built) return;
+  const sel = $('#capRun');
+  const runs = S.sessions.filter((s) => s.clips > 0);
+  const opts = runs.map((s) => {
+    const what = s.mode === 'live' ? `live ${s.name.split('_').slice(-2).join(' ')}` : s.name;
+    return `<option value="${esc(s.name)}">${esc(s.streamer || s.name)} · ${esc(what)} · ${s.clips} clip${s.clips > 1 ? 's' : ''}</option>`;
+  }).join('');
+  if (sel.dataset.html !== opts) { sel.innerHTML = opts || '<option value="">No clips cut yet</option>'; sel.dataset.html = opts; }
+  if (CAP.run && runs.some((s) => s.name === CAP.run)) sel.value = CAP.run;
+  else CAP.run = sel.value || null;
+
+  const name = CAP.run;
+  const data = name && S.sess[name];
+  if (name && !data) { loadSession(name); return; }
+  const clips = data ? data.report.clips.filter((c) => c.file && data.files[c.file]) : [];
+  const done = clips.filter((c) => c.captions).length;
+  const busy = name && (captionJobFor(name) || Object.values(S.jobs).some((j) => j.running && j.sessions.includes(name)));
+  const btn = $('#capGo');
+  btn.disabled = !CAP.info?.available || !clips.length || !!busy;
+  btn.textContent = !clips.length ? 'Add captions' : done === clips.length
+    ? `Redo captions on ${clips.length} clip${clips.length > 1 ? 's' : ''}`
+    : `Add captions to ${clips.length} clip${clips.length > 1 ? 's' : ''}`;
+  $('#capRunInfo').textContent = !name ? 'Cut some clips first (VODs or Live page).'
+    : busy ? 'This run is busy right now.'
+      : `${clips.length} clip${clips.length === 1 ? '' : 's'}, ${done} with captions.`;
+
+  // preview background: a frame from the first clip, without captions if there is a clean copy
+  const c = clips[0];
+  const key = c ? `${name}/${c.file}/${data.files[c.file]}` : null;
+  if (key !== CAP.frameKey) {
+    CAP.frameKey = key;
+    CAP.frame = null;
+    if (c) {
+      if (c.layout) capSetLayout(c.layout === 'stacked' ? 'stacked' : 'center');
+      const v = document.createElement('video');
+      v.muted = true; v.preload = 'auto'; v.crossOrigin = 'anonymous';
+      const path = c.captions ? `clean/${encodeURIComponent(c.file)}` : encodeURIComponent(c.file);
+      v.src = `/media/${encodeURIComponent(name)}/${path}?v=${data.files[c.file]}`;
+      v.addEventListener('loadedmetadata', () => { v.currentTime = Math.min(v.duration * 0.35, 12); });
+      v.addEventListener('seeked', () => {
+        if (CAP.frameKey !== key) return;
+        const off = document.createElement('canvas');
+        off.width = 270; off.height = 480;
+        off.getContext('2d').drawImage(v, 0, 0, 270, 480);
+        CAP.frame = off;
+        v.removeAttribute('src'); v.load();
+      }, { once: true });
+    }
+  }
+}
+
+function capY(position, layout) {
+  if (position === 'top') return 330;
+  if (position === 'middle') return 960;
+  if (position === 'bottom') return 1480;
+  return layout === 'stacked' ? 640 : 1300;
+}
+
+function capDraw() {
+  const cv = $('#capPreview');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height, k = W / 1080;
+  ctx.clearRect(0, 0, W, H);
+  if (CAP.frame) {
+    ctx.drawImage(CAP.frame, 0, 0, W, H);
+  } else {
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, '#2b2f6b'); g.addColorStop(1, '#5b2a6e');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    if (CAP.layout === 'stacked') {
+      ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(0, 0, W, 640 * k);
+      ctx.fillStyle = 'rgba(255,255,255,.45)'; ctx.font = `${12}px system-ui`; ctx.textAlign = 'center';
+      ctx.fillText('facecam', W / 2, 320 * k); ctx.fillText('gameplay', W / 2, 1300 * k);
+    }
+  }
+  const cfg = { ...(CAP.saved || {}), ...readForm('captions') };
+  const per = Math.max(1, Math.min(8, cfg.words_per_caption || 3));
+  const words = CAP_SAMPLE.split(' ').map((w) => (cfg.uppercase ? w.toUpperCase() : w));
+  const t = (performance.now() - CAP.t0) / 1000;
+  const idx = Math.floor(t / 0.34) % words.length;
+  const ci = Math.floor(idx / per);
+  const chunk = words.slice(ci * per, ci * per + per);
+  const hi = idx - ci * per;
+  const size = (cfg.size || 84) * k;
+  ctx.font = `900 ${size}px "${cfg.font || 'Arial Black'}", "Arial Black", Impact, sans-serif`;
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.lineJoin = 'round';
+  const space = ctx.measureText(' ').width;
+  const widths = chunk.map((w) => ctx.measureText(w).width);
+  let x = W / 2 - (widths.reduce((a, b) => a + b, 0) + space * (chunk.length - 1)) / 2;
+  const y = capY(cfg.position || 'auto', CAP.layout) * k;
+  chunk.forEach((w, i) => {
+    ctx.save();
+    const cx = x + widths[i] / 2;
+    ctx.translate(cx, y);
+    if (i === hi) ctx.scale(1.08, 1.08);
+    if (cfg.outline > 0) {
+      ctx.lineWidth = cfg.outline * 2 * k;
+      ctx.strokeStyle = '#000';
+      ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowOffsetX = ctx.shadowOffsetY = 2 * k;
+      ctx.strokeText(w, -widths[i] / 2, 0);
+      ctx.shadowColor = 'transparent';
+    }
+    ctx.fillStyle = i === hi ? (cfg.highlight || '#4ade80') : (cfg.color || '#fff');
+    ctx.fillText(w, -widths[i] / 2, 0);
+    ctx.restore();
+    x += widths[i] + space;
+  });
+}
+
+function capAnimate() {
+  cancelAnimationFrame(CAP.raf);
+  const loop = () => {
+    if (S.tab !== 'captions') return;
+    capDraw();
+    CAP.raf = requestAnimationFrame(loop);
+  };
+  loop();
+}
+
+async function capGo() {
+  const name = CAP.run;
+  if (!name) return;
+  if (JSON.stringify(capRead()) !== CAP.savedForm && !confirm('You have unsaved caption settings. Captions use the saved ones. Continue anyway?')) return;
+  const j = await startJob('captions', { session: name, retranscribe: $('#capRetrans').checked });
+  if (j) S.sel.captions.session = name;
+}
+
 // --------------------------------------------------------------------------- start
 async function init() {
   try {
@@ -1023,6 +1282,12 @@ async function init() {
   }
   buildForm('vod');
   buildForm('live');
+  if (!S.info.captions) {
+    $$('[data-k=captions]').forEach((el) => {
+      el.checked = false; el.disabled = true;
+      el.closest('label').title = 'Install faster-whisper first (see the Captions page).';
+    });
+  }
   renderTools();
   setupFacecam();
   setupConfig();
@@ -1069,7 +1334,7 @@ async function init() {
   await refreshSessions();
   setInterval(refreshSessions, 6000);
   const tab = store('clipper.tab');
-  setTab(['vod', 'live', 'setup'].includes(tab) ? tab : 'vod');
+  setTab(['vod', 'live', 'captions', 'setup'].includes(tab) ? tab : 'vod');
   // Show what's running (e.g. after reloading the page mid-stream), else the latest run.
   try {
     for (const j of await api('/api/jobs')) S.jobs[j.id] = j;

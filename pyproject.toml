@@ -14,6 +14,7 @@ plot = ["matplotlib>=3.5"]
 # OpenCV 5 dropped the bundled Haar face detector, so stay on 4.x
 facecam = ["opencv-python-headless>=4.5,<5"]
 live = ["streamlink>=6", "yt-dlp"]
+captions = ["faster-whisper>=1.1", "numpy"]
 
 [project.scripts]
 clipper = "clipper.cli:main"

@@ -23,11 +23,12 @@ import time
 import traceback
 import uuid
 import webbrowser
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .. import ClipperError, __version__, config, facecam, tools
+from .. import ClipperError, __version__, captions, config, facecam, tools
 from ..chat import parse_vod_id
 
 STATIC = Path(__file__).parent / "static"
@@ -35,7 +36,7 @@ CONFIG_FILES = ("keywords.yaml", "filters.yaml", "streamers.yaml")
 
 # Options the page may not set: file paths, secrets, output location (fixed by the server).
 _BLOCKED_DESTS = {"help", "version", "out", "oauth", "keywords", "filters", "streamers", "chat_file",
-                  "inputs", "channel"}
+                  "inputs", "channel", "captions_file"}
 _SAFE_STR = re.compile(r"^[\w\-.:, ]{1,64}$")
 
 
@@ -346,21 +347,59 @@ class App:
                     time.sleep(0.05)
             return None
         files = {p.name: p.stat().st_mtime for p in d.glob("*.mp4") if not p.name.endswith(".partial.mp4")}
+        subs = sorted(p.name for p in d.glob("*.srt"))
         return {"name": name, "dir": str(d), "mode": "live" if name.startswith("live_") else "vod",
-                "report": load("report.json"), "activity": load("activity.json"), "files": files}
+                "report": load("report.json"), "activity": load("activity.json"), "files": files, "subs": subs}
 
     # jobs -----------------------------------------------------------------
     def start_job(self, payload: dict) -> Job:
         mode = payload.get("mode")
-        if mode not in ("vod", "live"):
-            raise ApiError(400, "mode must be vod or live")
-        argv, title = build_argv(mode, payload)
+        if mode == "captions":
+            argv, title = self.captions_argv(payload)
+        elif mode in ("vod", "live"):
+            argv, title = build_argv(mode, payload)
+        else:
+            raise ApiError(400, "mode must be vod, live or captions")
         argv += ["--out", str(self.out_dir)]
         job = Job(mode, argv, title, self.work)
         with self.lock:
             self.jobs[job.id] = job
         job.start(self.cwd)
         return job
+
+    def captions_argv(self, payload: dict) -> tuple[list[str], str]:
+        name = str(payload.get("session", ""))
+        self.session_dir(name)                     # must be one of our runs
+        if any(j.running and name in j.sessions for j in self.jobs.values()):
+            raise ApiError(409, "That run is still busy. Wait for it to finish first.")
+        if not captions.available():
+            raise ApiError(400, "Captions need faster-whisper:  " + captions.INSTALL)
+        argv = ["captions", name]
+        only = payload.get("only")
+        if only:
+            if not re.fullmatch(r"\d{1,3}(,\d{1,3})*", str(only)):
+                raise ApiError(400, "only: clip ranks like 1,3,4")
+            argv += ["--only", str(only)]
+        if payload.get("retranscribe"):
+            argv.append("--retranscribe")
+        return argv, f"Captions: {name}"
+
+    def captions_info(self) -> dict:
+        return {"available": captions.available(), "install": captions.INSTALL,
+                "config": asdict(captions.load_config()), "models": captions.MODELS,
+                "positions": captions.POSITIONS, "gpu": captions.gpu_status(),
+                "path": str(config.DEFAULT_DIR / "captions.yaml")}
+
+    def save_captions(self, body: dict) -> dict:
+        data = body.get("config")
+        if not isinstance(data, dict):
+            raise ApiError(400, "config missing")
+        known = set(captions.CaptionConfig.__dataclass_fields__)
+        cfg = captions.CaptionConfig(**{k: v for k, v in data.items() if k in known})
+        if not isinstance(cfg.vocabulary, list) or not isinstance(cfg.replace, dict) or not isinstance(cfg.swears, list):
+            raise ApiError(400, "vocabulary and swears must be lists, replace a mapping")
+        captions.save_config(cfg)
+        return self.captions_info()
 
     def job(self, jid: str) -> Job:
         j = self.jobs.get(jid)
@@ -375,7 +414,7 @@ class App:
         has_mpl = importlib.util.find_spec("matplotlib") is not None
         return {"version": __version__, "out_dir": str(self.out_dir), "tools": found,
                 "install": {t: s["install"] for t, s in tools.TOOLS.items()},
-                "opencv": facecam.available(), "matplotlib": has_mpl,
+                "opencv": facecam.available(), "matplotlib": has_mpl, "captions": captions.available(),
                 "oauth": bool(os.environ.get("TWITCH_OAUTH")),
                 "defaults": {"vod": defaults("vod"), "live": defaults("live")}}
 
@@ -544,10 +583,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if method == "GET" and path.startswith("/media/"):
             parts = path[len("/media/"):].split("/")
-            if len(parts) != 2:
+            if not (len(parts) == 2 or (len(parts) == 3 and parts[1] == "clean")):   # clean/: clips without captions
                 raise ApiError(404, "not found")
             d = app.session_dir(parts[0])
-            p = (d / parts[1]).resolve()
+            p = d.joinpath(*parts[1:]).resolve()
             if not p.is_relative_to(d.resolve()) or not p.is_file():
                 raise ApiError(404, "not found")
             self._file(p)
@@ -611,6 +650,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"streamer": streamer, "boxes": config.load_facecams(streamer)})
         elif path == "/api/frame" and method == "POST":
             self._json({"url": app.grab_frame(self._body())})
+        elif path == "/api/captions" and method == "GET":
+            self._json(app.captions_info())
+        elif path == "/api/captions" and method == "POST":
+            self._json(app.save_captions(self._body()))
         else:
             raise ApiError(404, "not found")
 

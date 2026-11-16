@@ -349,6 +349,29 @@ textarea#cfgText {
   font: 12.5px/1.55 var(--mono); background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; outline: none;
 }
 
+/* ---------- captions ---------- */
+.cap-status { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.cap-status .pill { cursor: default; }
+.cap-missing { background: color-mix(in srgb, var(--warn) 14%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: 12px; padding: 10px 14px; }
+.cap-missing pre { margin: 8px 0; font: 12.5px var(--mono); white-space: pre-wrap; }
+.cap-grid { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 22px; align-items: start; }
+.cap-grid .opts { margin-top: 0; }
+.cap-text { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.cap-text textarea {
+  width: 100%; height: 120px; resize: vertical; padding: 9px 11px; font: 13px/1.5 var(--mono);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; outline: none;
+}
+.cap-text textarea::placeholder { color: var(--faint); }
+.cap-preview-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+#capPreview { width: 270px; height: 480px; border-radius: 16px; background: #000; box-shadow: var(--shadow); }
+.cap-preview-wrap .cap { text-align: center; max-width: 270px; }
+.cap-run-info { margin-top: 10px; }
+.field input[type=color] { padding: 3px; height: 37px; cursor: pointer; }
+.cc { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; padding: 1px 6px; border-radius: 5px;
+  color: var(--accent-ink); background: var(--accent); }
+.cc-err { color: var(--bad); }
+
 #toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px);
   background: var(--panel); border: 1px solid var(--glass-edge); border-radius: 14px; padding: 10px 16px;
@@ -374,7 +397,7 @@ textarea#cfgText {
   .side-foot .nav-item { width: auto; padding: 6px 12px; }
   .side-foot .pill { margin: 0; align-self: center; }
   .card { padding: 16px; }
-  .live-cols, .fc-main { grid-template-columns: 1fr; }
+  .live-cols, .fc-main, .cap-grid, .cap-text { grid-template-columns: 1fr; }
   .tool { grid-template-columns: 22px 1fr; }
   .tool > :last-child { grid-column: 2; }
 }

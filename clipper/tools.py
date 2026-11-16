@@ -80,11 +80,12 @@ def require(tools: list[str], any_of: list[str] | None = None) -> dict[str, str 
     return found
 
 
-def run(cmd: list[str], what: str) -> subprocess.CompletedProcess:
+def run(cmd: list[str], what: str, cwd: Path | str | None = None) -> subprocess.CompletedProcess:
     """Run a command, capturing output. Raises ClipperError with output on failure."""
     try:
         proc = subprocess.run(
             cmd,
+            cwd=cwd,
             stdin=subprocess.DEVNULL,  # TwitchDownloaderCLI may prompt on file collisions
             capture_output=True,
             text=True,

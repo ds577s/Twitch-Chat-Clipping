@@ -9,6 +9,7 @@ clipper ui                                         # dashboard in your browser (
 clipper https://www.twitch.tv/videos/123456789     # VOD: rank the whole stream, top 15 clips
 clipper live somechannel                           # live: a clip ~1 minute after each spike
 clipper live somechannel --vod-after               # both: live clips now, best-of from the VOD after
+clipper https://www.twitch.tv/videos/123456789 --captions   # add word-by-word speech captions
 ```
 
 > Only clip streams you have rights to: your own, streamers who gave permission, or paid
@@ -22,11 +23,12 @@ clipper live somechannel --vod-after               # both: live clips now, best-
    https://github.com/lay295/TwitchDownloader/releases and put `TwitchDownloaderCLI.exe`
    in this repo's `bin\` folder (or anywhere on PATH). Tested with 1.56.5.
 4. Install the tool itself, from this folder. `plot` adds the `--plot` chart, `facecam`
-   adds OpenCV for picking the facecam position automatically, and `live` adds
-   streamlink and yt-dlp for live mode (yt-dlp is also the VOD downloader fallback):
+   adds OpenCV for picking the facecam position automatically, `live` adds
+   streamlink and yt-dlp for live mode (yt-dlp is also the VOD downloader fallback), and
+   `captions` adds faster-whisper for speech captions:
 
 ```bash
-pip install -e ".[plot,facecam,live]"
+pip install -e ".[plot,facecam,live,captions]"
 ```
 
 `clipper` is now a command. You can also run `python -m clipper ...`.
@@ -54,6 +56,10 @@ http://127.0.0.1:8765/ while the window is open.
 - **Live tab:** type a channel and **Start watching**. You see the chat, a live chart, every
   spike (clipped or skipped, and why) and the clips as they're made. **Stop** finishes any
   clip in progress first. Reloading the page doesn't interrupt anything.
+- **Captions tab:** caption style with a live preview (font, size, colors, words at a time,
+  position, ALL CAPS, swear masking), the speech model and language, words to always spell
+  right, and **Add captions** for clips you've already cut. The **Add captions** switch on the
+  VODs and Live tabs captions clips as they're made.
 - **Setup tab:** which tools are installed, a **facecam picker** (grab a frame from a VOD or a
   live channel, drag a box around the facecam, see a preview of the vertical clip, save), and
   an editor for the keyword and filter files.
@@ -162,6 +168,36 @@ clips/live_<channel>_<date>_<time>/
   chat_activity.png              # with --plot
 ```
 
+## Captions
+
+```bash
+clipper https://www.twitch.tv/videos/123456789 --captions
+clipper live somechannel --captions
+clipper captions 123456789            # add or restyle captions on clips already cut
+```
+
+Each clip's speech is transcribed **on this PC** with
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (free, no account, nothing
+uploaded) and burned in TikTok-style: a few words at a time, bold with an outline, the word
+being spoken highlighted. With the facecam layout they sit on the line between the facecam
+and the gameplay. Each clip also gets a plain `.srt` subtitle file.
+
+- **Install:** `pip install -e ".[captions]"`. The speech model downloads once, the first time
+  it's used (the default `small` is about 480 MB).
+- **Speed:** on a laptop CPU, the `small` model takes about 10–25 s for a 45 s clip,
+  including the extra encode. An NVIDIA GPU is used when NVIDIA's CUDA 12 cuBLAS and cuDNN
+  libraries are installed; otherwise the CPU is used.
+- **Style, model, language, spelling:** `clipper/config/captions.yaml`, or the dashboard's
+  Captions tab. `vocabulary` helps Whisper spell streamer names, games and emotes; `replace`
+  fixes words it keeps getting wrong.
+- **Restyling is cheap:** every captioned clip keeps a copy without captions and its
+  transcript in `clean/`, so `clipper captions <run>` after a style change just re-draws
+  the captions. It transcribes again only when the model, language or vocabulary changed (or
+  with `--retranscribe`).
+- **Language:** detected per clip by default. Set it when you know it, since loud game audio
+  or a few words in another language can fool detection.
+- If captions fail for a clip, the clip is kept without them and the report says why.
+
 ## Output
 
 ```
@@ -173,6 +209,8 @@ clips/<vod_id>/
   report.csv                     # one row per clip, top chat messages, VOD link at the timestamp
   activity.json                  # chat score per window (the dashboard's chart)
   chat_activity.png              # with --plot
+  01_02h14m08s_score187.srt      # with --captions: subtitles
+  clean/                         # with --captions: clips without captions, and transcripts
 ```
 
 ## How detection works
@@ -223,6 +261,8 @@ Run `clipper --help` for the full list. Main ones:
 | `--oauth` | `$TWITCH_OAUTH` | For sub-only VODs |
 | `--chat-file` | | Use an existing chat JSON |
 | `--only` | | Only cut these ranks from a dry run with the same settings, e.g. `1,3,4` |
+| `--captions` | off | Burn speech captions into each clip (live mode too) |
+| `--caption-model` / `--caption-language` | from `captions.yaml` | e.g. `base`, `medium`; `en`, `es` |
 
 Live mode (`clipper live --help` for all): the same detection, boundary, layout and config
 options, plus:
@@ -250,4 +290,6 @@ The live tests replay the same kind of stream in real-time order (including a ra
 a sudden lasting jump in chat that must not become clips), parse real Twitch chat lines,
 and record, cut and clean up a rolling buffer with ffmpeg. The dashboard tests check that
 only known options reach the command line, and that saving facecams leaves the rest of
-`streamers.yaml` untouched byte for byte.
+`streamers.yaml` untouched byte for byte. The caption tests check how words are grouped, the
+`.ass` / `.srt` timing and highlighting, the settings file, and burn captions into a
+generated clip with ffmpeg.

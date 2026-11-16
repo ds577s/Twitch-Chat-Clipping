@@ -21,7 +21,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from . import ClipperError, config, events, facecam, report, tools, video
+from . import ClipperError, captions, config, events, facecam, report, tools, video
 from .chat import CleanStats, Message, VodMeta, classify, normalize
 from .config import FilterConfig, ScoringConfig
 from .detect import (DetectParams, Moment, Window, baseline_threshold, moment_from_group,
@@ -143,10 +143,11 @@ class ClipWorker(threading.Thread):
     """Cuts and renders clips in the background so chat keeps being read."""
 
     def __init__(self, rec: Recorder, sess_dir: Path, ffmpeg: str, layout: str,
-                 candidates: list[dict], on_done):
+                 candidates: list[dict], on_done, capcfg=None):
         super().__init__(daemon=True, name="clip-worker")
         self.rec, self.sess_dir, self.ffmpeg = rec, sess_dir, ffmpeg
         self.layout, self.candidates = layout, candidates
+        self.capcfg = capcfg
         self.detect_cam = layout == "stacked" and len(candidates) > 0 and facecam.available()
         self.on_done = on_done
         self.jobs: queue.Queue = queue.Queue()
@@ -198,7 +199,23 @@ class ClipWorker(threading.Thread):
         rec_entry["layout"] = "stacked" if cam else "center"
         video.render_vertical(raw, self.sess_dir / rec_entry["file"], self.ffmpeg, rec_entry["layout"], cam)
         raw.unlink(missing_ok=True)
+        if self.capcfg:
+            add_captions(self.sess_dir, rec_entry, self.capcfg, self.ffmpeg)
         print(f"  -> clip {rec_entry['rank']} ready: {rec_entry['file']}")
+
+
+def add_captions(run_dir: Path, rec_entry: dict, cfg, ffmpeg: str) -> None:
+    """Caption a freshly rendered clip. A captions failure keeps the clip, without captions."""
+    try:
+        info = captions.caption_clip(run_dir, rec_entry["file"], rec_entry.get("layout", "center"), cfg,
+                                     ffmpeg, fresh=True)
+        rec_entry["captions"] = info
+        rec_entry.pop("captions_error", None)
+        print(f"  captions: {info['words']} words" + (f" ({info['language']})" if info.get("language") else ""))
+    except ClipperError as e:
+        rec_entry.pop("captions", None)
+        rec_entry["captions_error"] = str(e).splitlines()[0]
+        print(f"  ! captions failed, clip kept without them: {e}")
 
 
 # --------------------------------------------------------------------------- session
@@ -256,6 +273,9 @@ def run(args: argparse.Namespace) -> int:
         found.setdefault(t, tools.find(t))
     if args.vod_after and not (found.get("yt-dlp") and found.get("twitchdownloader")):
         print("note: --vod-after needs yt-dlp (to find the VOD) and TwitchDownloaderCLI; it will be skipped.")
+    capcfg = captions.from_args(args)
+    if capcfg:   # load the speech model while waiting for the stream, not at the first clip
+        threading.Thread(target=captions.preload, args=(capcfg,), daemon=True, name="caption-model").start()
 
     scoring = config.load_scoring(args.keywords)
     if args.per_user_cap is not None:
@@ -316,7 +336,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"[{_clock(time.time())}] stream is live — recording (buffer {args.buffer:.0f}s) and watching chat")
         events.emit("state", state="live", t0=t0)
         det = LiveDetector(scoring, filters, p, t0)
-        worker = ClipWorker(rec, sess_dir, found["ffmpeg"], args.layout, candidates, save_report)
+        worker = ClipWorker(rec, sess_dir, found["ffmpeg"], args.layout, candidates, save_report, capcfg)
         worker.start()
         save_report()  # so the session (and the dashboard's view of it) exists from the start
 

@@ -20,6 +20,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 5a10 10 0 0 1 0 14M5 19A10 10 0 0 1 5 5"/></svg>
         <span>Live</span><i class="nav-dot" id="dot-live" hidden></i>
       </button>
+      <button data-tab="captions" class="nav-item">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10.5 10.3a2.3 2.3 0 1 0 0 3.4M17 10.3a2.3 2.3 0 1 0 0 3.4"/></svg>
+        <span>Captions</span><i class="nav-dot" id="dot-captions" hidden></i>
+      </button>
       <button data-tab="setup" class="nav-item">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
         <span>Setup</span>
@@ -74,6 +78,57 @@
       </div>
       <div id="liveJob"></div>
       <div id="liveSession"></div>
+    </section>
+
+    <!-- CAPTIONS -->
+    <section id="view-captions" class="view">
+      <div class="card">
+        <h2>Captions</h2>
+        <p class="sub">Speech captions burned into your clips, word by word, transcribed on this PC with
+          faster-whisper: free, no account, nothing uploaded. Turn them on with <b>Add captions</b> on the VODs or
+          Live page, or add them to clips you've already cut below. Each clip also gets a plain <code>.srt</code>
+          subtitle file, and keeps a copy without captions so you can change the style later.</p>
+        <div id="capStatus" class="cap-status"></div>
+      </div>
+
+      <div class="card">
+        <h2>Style</h2>
+        <div class="cap-grid">
+          <div>
+            <div class="opts" id="capOpts"></div>
+            <div class="cap-text">
+              <label class="field"><span>Always spell these right <span class="help" title="Streamer names, games, emotes and slang. One per line. Helps Whisper hear them correctly.">?</span></span>
+                <textarea id="capVocab" spellcheck="false" placeholder="ishowspeed&#10;Fortnite&#10;KEKW"></textarea></label>
+              <label class="field"><span>Fix these words <span class="help" title="When Whisper writes the left side, write the right side instead. One per line, like: speed = Speed">?</span></span>
+                <textarea id="capReplace" spellcheck="false" placeholder="ice speed = iShowSpeed&#10;pog champ = PogChamp"></textarea></label>
+            </div>
+          </div>
+          <div class="cap-preview-wrap">
+            <canvas id="capPreview" width="270" height="480"></canvas>
+            <div class="seg" id="capPrevLayout"><button data-l="stacked" class="active">Facecam on top</button><button data-l="center">Center crop</button></div>
+            <div class="cap">Preview. The real clip uses the same font, size and position.</div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="capSave">Save caption settings</button>
+          <button class="btn" id="capRevert">Undo changes</button>
+          <span class="hint" id="capPath"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Add captions to clips you've already cut</h2>
+        <p class="sub">Uses the clips in a run as they are, so nothing is downloaded again. After changing only the
+          style, the saved transcript is reused and it's quick.</p>
+        <div class="fc-controls">
+          <label class="field grow"><span>Run</span><select id="capRun"></select></label>
+          <label class="field check"><input type="checkbox" id="capRetrans"><span>Transcribe again</span>
+            <span class="help" title="Normally the saved transcript is reused when only the style changed. It's redone on its own after changing the model, language or 'always spell these right'.">?</span></label>
+          <button class="btn primary" id="capGo">Add captions</button>
+        </div>
+        <div class="hint cap-run-info" id="capRunInfo"></div>
+      </div>
+      <div id="captionsJob"></div>
     </section>
 
     <!-- SETUP -->

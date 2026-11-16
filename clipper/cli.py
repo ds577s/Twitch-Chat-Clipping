@@ -2,6 +2,7 @@
 
   clipper <VOD URL | ID | list.txt> [options]     VOD mode
   clipper live <channel> [options]                live mode
+  clipper captions <run folder> [options]         add or restyle captions on clips already cut
   clipper ui                                      web dashboard in your browser
 """
 
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from . import ClipperError, __version__
 from . import chat as chatmod
-from . import config, events, facecam, report, tools, video
+from . import captions, config, events, facecam, report, tools, video
 from .detect import DetectParams, detect
 
 
@@ -60,6 +61,19 @@ def _add_video_args(p: argparse.ArgumentParser, live: bool) -> None:
     g.add_argument("--keep-raw", action="store_true", help="Keep the unprocessed downloaded/recorded video")
     g.add_argument("--oauth", default=os.environ.get("TWITCH_OAUTH"),
                    help="Twitch OAuth token for sub-only content (or set TWITCH_OAUTH)")
+    _add_caption_args(p)
+
+
+def _add_caption_args(p: argparse.ArgumentParser, switch: bool = True) -> None:
+    g = p.add_argument_group("captions")
+    if switch:
+        g.add_argument("--captions", action="store_true",
+                       help="Burn speech captions into each clip, transcribed on this PC with faster-whisper. "
+                            "Style and vocabulary: captions.yaml")
+    g.add_argument("--caption-model", choices=captions.MODELS, default=None,
+                   help="Speech model (default: captions.yaml). Bigger is more accurate but slower")
+    g.add_argument("--caption-language", default=None, help="auto, or a code like en, es (default: captions.yaml)")
+    g.add_argument("--captions-file", type=Path, help="Custom captions.yaml")
 
 
 def _add_config_args(g) -> None:
@@ -113,6 +127,73 @@ def build_live_parser() -> argparse.ArgumentParser:
                    help="Stop after this many minutes of stream (0 = until the stream ends or Ctrl-C)")
     _add_config_args(g)
     return p
+
+
+def build_captions_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="clipper captions",
+        description="Add captions to clips that were already cut, or restyle them after changing "
+                    "captions.yaml. Nothing is downloaded again, and saved transcripts are reused.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("run", help="A run folder (e.g. clips/2928036561), or its name inside --out")
+    p.add_argument("--out", default="./clips", help="Clips folder the run name is looked up in")
+    p.add_argument("--only", default=None, metavar="RANKS", help="Only these clips, by rank, e.g. 1,3,4")
+    p.add_argument("--retranscribe", action="store_true",
+                   help="Transcribe again even though a transcript is saved (happens on its own when the "
+                        "model, language or vocabulary changed)")
+    _add_caption_args(p, switch=False)
+    return p
+
+
+def run_captions(args) -> int:
+    import json
+    run_dir = Path(args.run)
+    if not (run_dir / "report.json").exists():
+        run_dir = Path(args.out) / args.run
+    if not (run_dir / "report.json").exists():
+        raise ClipperError(f"No run found at {args.run} (looked for report.json).")
+    args.captions = True
+    cfg = captions.from_args(args)
+    ffmpeg = tools.require(["ffmpeg"])["ffmpeg"]
+    mode = "live" if run_dir.name.startswith("live_") else "vod"
+    events.emit("session", mode=mode, dir=str(run_dir.resolve()), name=run_dir.name)
+    data = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    only = _parse_only(args.only) if args.only else None
+    todo = [c for c in data.get("clips") or []
+            if c.get("file") and (run_dir / c["file"]).exists() and (only is None or c["rank"] in only)]
+    if not todo:
+        raise ClipperError("No clips to caption in this run. Cut some first.")
+    print(f"Captioning {len(todo)} clip(s) in {run_dir} with the {cfg.model} model "
+          f"(language: {cfg.language})")
+    events.emit("stage", text=f"Loading the {cfg.model} speech model")
+    failed = done = 0
+    for n, c in enumerate(todo, 1):
+        if events.stop_requested():
+            print(f"stopped; {n - 1}/{len(todo)} clips captioned")
+            break
+        print(f"clip {n}/{len(todo)}: {c['file']}")
+        events.emit("clip", rank=c["rank"], status="working", n=n, total=len(todo))
+        try:
+            if c.get("captions") and not (run_dir / "clean" / c["file"]).exists():
+                raise ClipperError("its copy without captions is missing, so the captions can't be redone. "
+                                   "Cut the clip again.")
+            info = captions.caption_clip(run_dir, c["file"], c.get("layout") or "center", cfg, ffmpeg,
+                                         fresh=False, retranscribe=args.retranscribe)
+            c["captions"] = info
+            c.pop("captions_error", None)
+            done += 1
+            print(f"  {info['words']} words" + (f" ({info['language']})" if info.get("language") else ""))
+        except ClipperError as e:
+            failed += 1
+            c["captions_error"] = str(e).splitlines()[0]
+            print(f"  ! {e}", file=sys.stderr)
+        report.save_report_json(run_dir, data)
+        events.emit("clip", rank=c["rank"], status="failed" if c.get("captions_error") else "done",
+                    n=n, total=len(todo))
+    events.emit("report")
+    print(f"{done}/{len(todo)} clips captioned")
+    return 1 if failed and not done else 0
 
 
 # --------------------------------------------------------------------------- VOD mode
@@ -187,12 +268,17 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
     msgs, stats = chatmod.clean(comments, filters, params.window, meta.length)
     wins, moments = detect(msgs, meta.length or 0, scoring, params, stats.mutes)
 
+    previous = report.previous_clips(vod_dir)
     records = []
     for i, m in enumerate(moments, 1):
         fname = report.clip_filename(i, m)
         if args.dry_run and not (vod_dir / fname).exists():  # a preview still lists clips cut earlier
             fname = None
-        records.append(report.moment_record(i, m, vod_id, fname))
+        rec = report.moment_record(i, m, vod_id, fname)
+        if fname and (vod_dir / fname).exists():   # remember how an existing clip was made
+            rec.update({k: v for k, v in previous.get(fname, {}).items()
+                        if k in ("layout", "facecam", "captions", "captions_error")})
+        records.append(rec)
     if live_clips and meta.created_at:
         n = _mark_clipped_live(moments, records, meta.created_at, live_clips)
         if n:
@@ -233,6 +319,7 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
             print(f"[{vod_id}] several facecam positions configured but OpenCV isn't installed, so the "
                   f"first one is used for every clip. pip install \"opencv-python-headless<5\" to auto-pick.")
 
+    capcfg = captions.from_args(args)
     raw_dir = vod_dir / "raw"
     todo = [(i, m, rec) for i, (m, rec) in enumerate(zip(moments, records), 1)
             if rec["file"] and not rec.get("not_selected")]
@@ -263,6 +350,13 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
             video.render_vertical(raw, dest, found["ffmpeg"], layout, cam)
             if not args.keep_raw:
                 raw.unlink(missing_ok=True)
+            if capcfg:
+                from .live import add_captions
+                add_captions(vod_dir, rec, capcfg, found["ffmpeg"])
+            else:
+                captions.forget(vod_dir, rec["file"])
+                rec.pop("captions", None)
+                rec.pop("captions_error", None)
         except ClipperError as e:
             failed += 1
             rec["file"] = None
@@ -310,6 +404,16 @@ def main(argv: list[str] | None = None) -> int:
         except ClipperError as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
+    if argv and argv[0] == "captions":
+        args = build_captions_parser().parse_args(argv[1:])
+        try:
+            return run_captions(args)
+        except ClipperError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            print("\ninterrupted", file=sys.stderr)
+            return 130
 
     args = build_parser().parse_args(argv)
     try:
@@ -323,6 +427,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.per_user_cap is not None:
             scoring.per_user_cap = args.per_user_cap
         filters = config.load_filters(args.filters)
+        if not args.dry_run:
+            captions.from_args(args)   # missing faster-whisper or a broken captions.yaml: fail now
 
         # Check tools up front so a batch doesn't fail halfway through.
         if args.dry_run:

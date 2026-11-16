@@ -83,6 +83,24 @@ def write_reports(out_dir: Path, meta: VodMeta, params: DetectParams, stats: Cle
     return jpath, cpath
 
 
+def previous_clips(out_dir: Path) -> dict[str, dict]:
+    """Clip records from an existing report.json, by file name ({} if there is none)."""
+    try:
+        data = json.loads((out_dir / "report.json").read_text(encoding="utf-8"))
+        return {c["file"]: c for c in data.get("clips") or [] if c.get("file")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def save_report_json(out_dir: Path, data: dict) -> None:
+    """Rewrite report.json as given (used after captioning clips of an existing run)."""
+    path = out_dir / "report.json"
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    _replace(tmp, path)
+
+
 def window_row(w) -> list:
     """Compact per-window record for activity.json and live UI events:
     [start, score, threshold, spike, muted, messages]."""
