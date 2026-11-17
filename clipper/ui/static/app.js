@@ -1010,13 +1010,24 @@ async function fcGrab() {
   }
 }
 
+// The streamers.yaml key a live job reads facecams from: --streamer, or else the channel.
+function liveStreamer(job) {
+  const i = job.argv.indexOf('--streamer');
+  const s = i >= 0 ? job.argv[i + 1] : 'auto';
+  return (s && s !== 'auto' ? s : job.argv[1] || '').toLowerCase();
+}
+
 async function fcSave() {
   const s = $('#fcStreamer').value.trim().toLowerCase();
   if (!s) { toast('Type the streamer\'s channel name first.', true); $('#fcStreamer').focus(); return; }
   if (!FC.boxes.length && !confirm(`Remove all facecam positions for ${s}?`)) return;
   try {
     const r = await api('/api/facecams', { method: 'POST', body: { streamer: s, ref_height: FC.natH, boxes: FC.boxes } });
-    toast(`Saved ${r.boxes.length} position${r.boxes.length === 1 ? '' : 's'} for ${s}. Use the "Facecam on top" layout.`);
+    const saved = `Saved ${r.boxes.length} position${r.boxes.length === 1 ? '' : 's'} for ${s}.`;
+    const live = Object.values(S.jobs).find((j) => j.running && j.mode === 'live' && liveStreamer(j) === s);
+    if (!live) toast(`${saved} Use the "Facecam on top" layout.`);
+    else if (live.argv.includes('stacked')) toast(`${saved} The live run for ${s} uses them from its next clip.`);
+    else toast(`${saved} The live run for ${s} uses the Center layout, so it won't use them: stop it and start again with "Facecam on top".`, true);
     if (CFG.name === 'streamers.yaml') loadConfig('streamers.yaml');
   } catch (e) { toast(e.message, true); }
 }

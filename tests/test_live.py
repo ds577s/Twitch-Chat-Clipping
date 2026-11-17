@@ -10,7 +10,7 @@ from pathlib import Path
 from clipper import chat as chatmod
 from clipper import config, tools
 from clipper.detect import DetectParams
-from clipper.live import LiveDetector, channel_name, write_chat_json
+from clipper.live import ClipWorker, LiveDetector, channel_name, write_chat_json
 from clipper.livechat import event_from_line, parse_line
 from clipper.recorder import Recorder, streamlink_cmd
 
@@ -209,6 +209,28 @@ class RecorderTest(unittest.TestCase):
             self.assertGreaterEqual(len(rec.segments()), 1)
         finally:
             rec.stop()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class FacecamReloadTest(unittest.TestCase):
+    """Facecam positions saved during a live run apply from the next clip."""
+
+    def test_worker_rereads_streamers_yaml(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            yaml = tmp / "streamers.yaml"
+            yaml.write_text("streamers:\n  other:\n    facecam: { x: 1, y: 2, w: 3, h: 4 }\n", encoding="utf-8")
+            w = ClipWorker(None, tmp, "ffmpeg", "stacked", [], lambda: None, streamer="Jynxzi", streamers_path=yaml)
+            self.assertEqual(w.current_candidates(), [])           # nothing saved yet: center crop
+            yaml.write_text("streamers:\n  jynxzi:\n    facecams:\n"
+                            "      - { x: 5, y: 605, w: 619, h: 475, ref_height: 1080 }\n", encoding="utf-8")
+            self.assertEqual(w.current_candidates(),
+                             [{"x": 5.0, "y": 605.0, "w": 619.0, "h": 475.0, "ref_height": 1080.0}])
+            yaml.write_text("streamers:\n  jynxzi:\n    facecam: { x: oops }\n", encoding="utf-8")
+            self.assertEqual(len(w.current_candidates()), 1)        # bad edit: keeps the last good box
+            center = ClipWorker(None, tmp, "ffmpeg", "center", [], lambda: None, streamer="jynxzi", streamers_path=yaml)
+            self.assertEqual(center.current_candidates(), [])       # center layout never uses boxes
+        finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
 

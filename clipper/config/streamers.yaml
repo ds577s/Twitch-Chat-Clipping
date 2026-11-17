@@ -20,3 +20,7 @@ streamers:
     facecams:
       - { x: 2, y: 400, w: 454, h: 252 }   # left, mid-height (reaction / solo Fortnite)
       - { x: 2, y: 842, w: 428, h: 236 }   # bottom-left (duo layout with partner cams)
+
+  jynxzi:
+    facecams:
+      - { x: 1, y: 495, w: 638, h: 435, ref_height: 1080 }

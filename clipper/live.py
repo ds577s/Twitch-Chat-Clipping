@@ -158,12 +158,14 @@ class ClipWorker(threading.Thread):
     """Cuts and renders clips in the background so chat keeps being read."""
 
     def __init__(self, rec: Recorder, sess_dir: Path, ffmpeg: str, layout: str,
-                 candidates: list[dict], on_done, capcfg=None):
+                 candidates: list[dict], on_done, capcfg=None, streamer: str | None = None,
+                 streamers_path: Path | None = None):
         super().__init__(daemon=True, name="clip-worker")
         self.rec, self.sess_dir, self.ffmpeg = rec, sess_dir, ffmpeg
         self.layout, self.candidates = layout, candidates
+        self.streamer, self.streamers_path = streamer, streamers_path
         self.capcfg = capcfg
-        self.detect_cam = layout == "stacked" and len(candidates) > 0 and facecam.available()
+        self.can_detect = facecam.available()
         self.on_done = on_done
         self.jobs: queue.Queue = queue.Queue()
         self.pending: dict[int, float] = {}
@@ -206,6 +208,23 @@ class ClipWorker(threading.Thread):
                     print(f"  ! couldn't save the report: {type(e).__name__}: {e}")
                 events.emit("clip", rank=rec_entry["rank"], status="failed" if rec_entry.get("error") else "done")
 
+    def current_candidates(self) -> list[dict]:
+        """Facecam boxes for this clip. With the stacked layout streamers.yaml is read again for
+        every clip, so positions saved in Setup during a live run apply from the next clip."""
+        if self.layout != "stacked":
+            return []
+        if self.streamer:
+            try:
+                boxes = config.load_facecams(self.streamer, self.streamers_path)
+            except Exception as e:   # e.g. the file is mid-edit: keep the last good positions
+                print(f"  ! couldn't re-read the facecam positions ({e}); using the previous ones")
+            else:
+                if boxes != self.candidates:
+                    print(f"  facecam positions for '{self.streamer}' updated: {len(boxes)} position(s)"
+                          + ("" if boxes else ", so clips use the center crop"))
+                    self.candidates = boxes
+        return self.candidates
+
     def _make(self, rec_entry: dict, a: float, b: float) -> None:
         deadline = time.time() + 60
         while (self.rec.covered_until() or 0) < b and self.rec.running() and time.time() < deadline:
@@ -214,10 +233,11 @@ class ClipWorker(threading.Thread):
         raw.parent.mkdir(parents=True, exist_ok=True)
         self.rec.cut(a, b, raw)
         self._release(rec_entry)   # cut: the buffer may drop this part now, even while rendering/captioning
-        cam = self.candidates[0] if (self.layout == "stacked" and self.candidates) else None
-        if self.detect_cam:
-            idx, _hits = facecam.pick(raw, self.candidates)
-            cam = self.candidates[idx] if idx is not None else None
+        cands = self.current_candidates()
+        cam = cands[0] if cands else None
+        if cands and self.can_detect:
+            idx, _hits = facecam.pick(raw, cands)
+            cam = cands[idx] if idx is not None else None
             rec_entry["facecam"] = idx + 1 if idx is not None else None
         rec_entry["layout"] = "stacked" if cam else "center"
         video.render_vertical(raw, self.sess_dir / rec_entry["file"], self.ffmpeg, rec_entry["layout"], cam)
@@ -306,7 +326,8 @@ def run(args: argparse.Namespace) -> int:
     streamer = channel if args.streamer == "auto" else args.streamer
     candidates = config.load_facecams(streamer, args.streamers) if args.layout == "stacked" else []
     if args.layout == "stacked" and not candidates:
-        print(f"no facecam config for '{streamer}' in streamers.yaml; using center layout")
+        print(f"no facecam position for '{streamer}' in streamers.yaml yet; clips use the center crop "
+              "until you save one (Setup → Facecam), which applies from the next clip")
 
     sess_dir = Path(args.out) / f"live_{channel}_{datetime.now():%Y%m%d_%H%M%S}"
     sess_dir.mkdir(parents=True, exist_ok=True)
@@ -358,7 +379,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"[{_clock(time.time())}] stream is live — recording (buffer {args.buffer:.0f}s) and watching chat")
         events.emit("state", state="live", t0=t0)
         det = LiveDetector(scoring, filters, p, t0)
-        worker = ClipWorker(rec, sess_dir, found["ffmpeg"], args.layout, candidates, save_report, capcfg)
+        worker = ClipWorker(rec, sess_dir, found["ffmpeg"], args.layout, candidates, save_report, capcfg,
+                            streamer=streamer, streamers_path=args.streamers)
         worker.start()
         save_report()  # so the session (and the dashboard's view of it) exists from the start
 
