@@ -196,7 +196,9 @@ class RecorderTest(unittest.TestCase):
             out = tmp / "clip.mp4"
             rec.cut(t_first + 2, t_first + 8, out)
             import subprocess
-            dur = float(subprocess.run([ff.replace("ffmpeg", "ffprobe"), "-v", "error", "-show_entries",
+            # swap only the filename: install folders can contain "ffmpeg" too (winget's do)
+            ffprobe = str(Path(ff).with_name(Path(ff).name.replace("ffmpeg", "ffprobe")))
+            dur = float(subprocess.run([ffprobe, "-v", "error", "-show_entries",
                                         "format=duration", "-of", "csv=p=0", str(out)],
                                        capture_output=True, text=True).stdout.strip())
             self.assertGreater(dur, 5)
