@@ -193,6 +193,7 @@ class RecorderTest(unittest.TestCase):
             segs = rec.segments()
             self.assertGreaterEqual(len(segs), 4, rec.log_tail())
             t_first = segs[0][0]
+            self.assertLess(abs(segs[-1][0] - time.time()), 30)   # names are real (UTC) wall time
             out = tmp / "clip.mp4"
             rec.cut(t_first + 2, t_first + 8, out)
             import subprocess

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import mimetypes
 import os
 import re
@@ -202,8 +203,8 @@ def build_argv(mode: str, payload: dict) -> tuple[list[str], str]:
                 v = a.type(v)
             except (TypeError, ValueError):
                 raise ApiError(400, f"{flag}: needs a number") from None
-            if v < 0:
-                raise ApiError(400, f"{flag}: can't be negative")
+            if not math.isfinite(v) or v < 0:   # "nan"/"inf" parse as floats
+                raise ApiError(400, f"{flag}: needs a positive number")
         elif a.type is None:
             v = str(v)
             if not _SAFE_STR.match(v):

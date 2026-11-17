@@ -64,10 +64,7 @@ def write_reports(out_dir: Path, meta: VodMeta, params: DetectParams, stats: Cle
         "params": vars(params),
         "clips": records,
     }
-    tmp = jpath.with_suffix(".tmp")   # the UI may read it at any moment
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    _replace(tmp, jpath)
+    _write_json(jpath, payload, indent=2)
 
     cols = ["rank", "file", "clipped_live", "clock_time", "clip_start_hms", "clip_start", "clip_end", "duration", "peak_time_hms",
             "peak_score", "baseline", "ratio", "peak_unique_chatters", "messages_in_spike",
@@ -94,11 +91,7 @@ def previous_clips(out_dir: Path) -> dict[str, dict]:
 
 def save_report_json(out_dir: Path, data: dict) -> None:
     """Rewrite report.json as given (used after captioning clips of an existing run)."""
-    path = out_dir / "report.json"
-    tmp = path.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    _replace(tmp, path)
+    _write_json(out_dir / "report.json", data, indent=2)
 
 
 def window_row(w) -> list:
@@ -110,12 +103,17 @@ def window_row(w) -> list:
 def write_activity(out_dir: Path, window: float, wins) -> Path:
     """Chat activity per window, for the web UI's chart."""
     path = out_dir / "activity.json"
+    _write_json(path, {"window": window, "columns": ["start", "score", "threshold", "spike", "muted", "messages"],
+                       "rows": [window_row(w) for w in wins]}, separators=(",", ":"))
+    return path
+
+
+def _write_json(path: Path, obj, **dump_kw) -> None:
+    """Write to a temp file, then swap it in: the UI may read the file at any moment."""
     tmp = path.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"window": window, "columns": ["start", "score", "threshold", "spike", "muted", "messages"],
-                   "rows": [window_row(w) for w in wins]}, f, ensure_ascii=False, separators=(",", ":"))
+        json.dump(obj, f, ensure_ascii=False, **dump_kw)
     _replace(tmp, path)
-    return path
 
 
 def _replace(tmp: Path, dest: Path) -> None:

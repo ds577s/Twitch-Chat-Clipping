@@ -162,3 +162,21 @@ class PipelineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarkClippedLiveTest(unittest.TestCase):
+    def test_only_overlapping_moment_is_skipped(self):
+        from clipper.cli import _mark_clipped_live
+        from clipper.detect import Moment
+        created = 1_700_000_000.0
+        def mom(a, b):
+            m = Moment(spike_start=a, spike_end=b, peak_time=a, peak_score=1, baseline=1, ratio=1, z=0, peak_unique=1)
+            m.clip_start, m.clip_end = a, b
+            return m
+        moments = [mom(600, 640), mom(3600, 3640)]
+        records = [{"file": "01.mp4"}, {"file": "02.mp4"}]
+        # live clip of the first moment; live video runs ~4s behind broadcast
+        live = [(created + 604, created + 644, "live01.mp4")]
+        self.assertEqual(_mark_clipped_live(moments, records, created, live), 1)
+        self.assertEqual(records[0], {"file": None, "clipped_live": "live01.mp4"})
+        self.assertEqual(records[1], {"file": "02.mp4"})

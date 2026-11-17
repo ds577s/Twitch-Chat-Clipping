@@ -47,6 +47,24 @@ def _add_detection_args(p: argparse.ArgumentParser, live: bool) -> None:
     g.add_argument("--max-len", type=float, default=60, help="Maximum clip length (s)")
 
 
+def detect_params(args, max_clips: int | None = None) -> DetectParams:
+    """Detection settings from the options above (VOD mode, live mode and --vod-after)."""
+    return DetectParams(
+        window=args.window, method=args.method, multiplier=args.multiplier, z=args.z,
+        baseline_span=args.baseline, min_score=args.min_score, merge_gap=args.merge_gap,
+        pre_roll=args.pre_roll, post_roll=args.post_roll, min_len=args.min_len, max_len=args.max_len,
+        max_clips=args.max_clips if max_clips is None else max_clips, rank_by=args.rank_by,
+    )
+
+
+def load_scoring_filters(args):
+    """keywords.yaml (with --per-user-cap applied) and filters.yaml for a run."""
+    scoring = config.load_scoring(args.keywords)
+    if args.per_user_cap is not None:
+        scoring.per_user_cap = args.per_user_cap
+    return scoring, config.load_filters(args.filters)
+
+
 def _add_video_args(p: argparse.ArgumentParser, live: bool) -> None:
     g = p.add_argument_group("video")
     g.add_argument("--layout", choices=["center", "stacked"], default="center",
@@ -259,12 +277,7 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
                            "isn't this stream. Past broadcasts may be off, or the VOD isn't published yet.")
 
     # 2-5. Clean, score, detect, bound
-    params = DetectParams(
-        window=args.window, method=args.method, multiplier=args.multiplier, z=args.z,
-        baseline_span=args.baseline, min_score=args.min_score, merge_gap=args.merge_gap,
-        pre_roll=args.pre_roll, post_roll=args.post_roll, min_len=args.min_len, max_len=args.max_len,
-        max_clips=args.max_clips, rank_by=args.rank_by,
-    )
+    params = detect_params(args)
     msgs, stats = chatmod.clean(comments, filters, params.window, meta.length)
     wins, moments = detect(msgs, meta.length or 0, scoring, params, stats.mutes)
 
@@ -323,12 +336,13 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
     raw_dir = vod_dir / "raw"
     todo = [(i, m, rec) for i, (m, rec) in enumerate(zip(moments, records), 1)
             if rec["file"] and not rec.get("not_selected")]
-    failed = 0
+    failed = made = 0
     for n, (i, m, rec) in enumerate(todo, 1):
         if events.stop_requested():
             print(f"[{vod_id}] stopped; {n - 1}/{len(todo)} clips were made")
             for _, _, r in todo[n - 1:]:
-                r["file"] = None
+                if not (vod_dir / r["file"]).exists():   # keep clips cut in an earlier run
+                    r["file"] = None
             break
         dest = vod_dir / rec["file"]
         raw = raw_dir / f"{i:02d}_{int(m.clip_start)}-{int(m.clip_end)}.mp4"
@@ -339,15 +353,17 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
                 video.download_segment(vod_id, m.clip_start, m.clip_end, raw, found,
                                        downloader=args.downloader, quality=args.quality, oauth=args.oauth)
             cam = candidates[0] if candidates else None
+            made_with = {}
             if detect_cam:
                 idx, hits = facecam.pick(raw, candidates)
                 cam = candidates[idx] if idx is not None else None
-                rec["facecam"] = idx + 1 if idx is not None else None  # 1-based, like the console
+                made_with["facecam"] = idx + 1 if idx is not None else None  # 1-based, like the console
                 print("  facecam: " + (f"position {idx + 1} (face in {hits[idx]}/{facecam.SAMPLES} frames)"
                                        if idx is not None else "no face found in any box, using center crop"))
-            layout = "stacked" if cam else "center"
-            rec["layout"] = layout
+            layout = made_with["layout"] = "stacked" if cam else "center"
             video.render_vertical(raw, dest, found["ffmpeg"], layout, cam)
+            rec.update(made_with)   # only once rendered: a failed re-cut keeps describing the earlier clip
+            made += 1
             if not args.keep_raw:
                 raw.unlink(missing_ok=True)
             if capcfg:
@@ -359,7 +375,8 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
                 rec.pop("captions_error", None)
         except ClipperError as e:
             failed += 1
-            rec["file"] = None
+            if not dest.exists():   # a failed re-cut leaves the earlier clip in place
+                rec["file"] = None
             rec["error"] = str(e).splitlines()[0]
             print(f"  ! {e}", file=sys.stderr)
         report.write_reports(vod_dir, meta, params, stats, records)
@@ -370,9 +387,8 @@ def process_vod(vod_input: str, args, scoring, filters, found: dict,
 
     report.write_reports(vod_dir, meta, params, stats, records)
     events.emit("report")
-    done = sum(1 for _, _, r in todo if r["file"])
-    print(f"[{vod_id}] {done}/{len(todo)} clips written to {vod_dir}")
-    if failed and not done:
+    print(f"[{vod_id}] {made}/{len(todo)} clips written to {vod_dir}")
+    if failed and not made:
         raise ClipperError(f"[{vod_id}] every clip failed; see errors above.")
     return vod_dir
 
@@ -423,10 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.chat_file and len(vods) > 1:
             raise ClipperError("--chat-file only works with a single VOD.")
 
-        scoring = config.load_scoring(args.keywords)
-        if args.per_user_cap is not None:
-            scoring.per_user_cap = args.per_user_cap
-        filters = config.load_filters(args.filters)
+        scoring, filters = load_scoring_filters(args)
         if not args.dry_run:
             captions.from_args(args)   # missing faster-whisper or a broken captions.yaml: fail now
 

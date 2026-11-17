@@ -30,6 +30,8 @@ class BuildArgvTest(unittest.TestCase):
             server.build_argv("vod", {"inputs": ["123"], "options": {"streamer": "a;rm -rf /"}})
         with self.assertRaises(server.ApiError):
             server.build_argv("vod", {"inputs": ["123"], "options": {"multiplier": -1}})
+        with self.assertRaises(server.ApiError):
+            server.build_argv("vod", {"inputs": ["123"], "options": {"window": "nan"}})
         # paths and secrets are never taken from the page
         argv, _ = server.build_argv("vod", {"inputs": ["123"], "options": {"keywords": "C:/x.yaml", "oauth": "abc",
                                                                             "out": "C:/", "chat_file": "x"}})
@@ -93,3 +95,51 @@ class EventsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HttpSecurityTest(unittest.TestCase):
+    """The checks that keep other websites and devices out of the dashboard."""
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        out = Path(tempfile.mkdtemp())
+        (out / "run1").mkdir()
+        (out / "run1" / "a.mp4").write_bytes(b"x")
+        (out / "secret.txt").write_text("no", encoding="utf-8")
+        cls.app = server.App(out, out)
+        handler = type("H", (server.Handler,), {"app": cls.app})
+        cls.httpd = server.Server(("127.0.0.1", 0), handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.app.allowed_hosts = {f"127.0.0.1:{cls.port}"}
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def req(self, method, path, host=None, token=None):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        headers = {"Host": host or f"127.0.0.1:{self.port}", "Content-Type": "application/json"}
+        if token:
+            headers["X-Clipper-Token"] = token
+        c.request(method, path, body=b"{}" if method != "GET" else None, headers=headers)
+        status = c.getresponse().status
+        c.close()
+        return status
+
+    def test_wrong_host_refused(self):   # DNS rebinding: another site resolving to 127.0.0.1
+        self.assertEqual(self.req("GET", "/api/info", host="evil.example:80"), 403)
+        self.assertEqual(self.req("GET", "/api/info"), 200)
+
+    def test_changes_need_the_token(self):
+        self.assertEqual(self.req("POST", "/api/jobs"), 403)
+        self.assertEqual(self.req("POST", "/api/jobs", token="wrong"), 403)
+        self.assertEqual(self.req("POST", "/api/jobs", token=self.app.token), 400)  # past the check: no mode
+
+    def test_media_stays_inside_the_run(self):
+        self.assertEqual(self.req("GET", "/media/run1/a.mp4"), 200)
+        self.assertEqual(self.req("GET", "/media/run1/..%2Fsecret.txt"), 404)
+        self.assertEqual(self.req("GET", "/media/..%2Fsecret.txt"), 400)   # ".." is not a run name

@@ -135,12 +135,15 @@ class LiveChat(threading.Thread):
                 if line.startswith("PING"):
                     sock.sendall(line.replace("PING", "PONG", 1).encode() + b"\r\n")
                     continue
-                _, _, cmd, _, _ = parse_line(line)
+                try:
+                    _, _, cmd, _, _ = parse_line(line)
+                    ev = event_from_line(line, now)
+                except ValueError:   # a malformed line must not stop the chat reader
+                    continue
                 if cmd == "RECONNECT":
                     raise OSError("Twitch asked us to reconnect")
                 if cmd in ("ROOMSTATE", "366") and not joined:
                     joined = True
                     self._info(f"connected to #{self.channel} chat")
-                ev = event_from_line(line, now)
                 if ev:
                     self.events.put(ev)

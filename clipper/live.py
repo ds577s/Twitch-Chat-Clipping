@@ -12,6 +12,7 @@ look like spikes to a trailing baseline but aren't moments.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import queue
 import shutil
@@ -23,6 +24,7 @@ from pathlib import Path
 
 from . import ClipperError, captions, config, events, facecam, report, tools, video
 from .chat import CleanStats, Message, VodMeta, classify, normalize
+from .cli import detect_params, load_scoring_filters, process_vod
 from .config import FilterConfig, ScoringConfig
 from .detect import (DetectParams, Moment, Window, baseline_threshold, moment_from_group,
                      set_clip_bounds, summarize_chat, window_score)
@@ -42,7 +44,8 @@ class LiveDetector:
         self.scoring, self.filters, self.p, self.t0 = scoring, filters, p, t0
         self.windows: list[Window] = []                 # scored windows, in order
         self._acc: dict[int, list] = {}                 # idx -> [per_user Counter, counted, kw, messages]
-        self.msgs: list[Message] = []                   # kept messages, time relative to t0
+        self.msgs: list[Message] = []                   # recent kept messages, time relative to t0
+        self.msgs_total = 0                             # kept messages ever (msgs drops old ones)
         self.stats = CleanStats()
         self._raid_hits: Counter = Counter()
         self._group: list[Window] = []
@@ -68,6 +71,7 @@ class LiveDetector:
             return
         self.stats.kept += 1
         self.msgs.append(Message(t=t, user=user or "?", body=body))
+        self.msgs_total += 1
         idx = max(int(t // self.p.window), len(self.windows))  # very late message -> next open window
         acc = self._acc.setdefault(idx, [Counter(), 0, 0.0, 0])
         acc[0][user] += 1
@@ -114,7 +118,18 @@ class LiveDetector:
                 self._last_spike_end = w.start + p.window
             elif self._group and w.start + p.window - self._last_spike_end > p.merge_gap:
                 out.append(self._close(t_now))
+        if len(self.msgs) > 50_000:
+            self._trim_msgs(t_now)
         return out
+
+    def _trim_msgs(self, t_now: float) -> None:
+        """Forget chat no spike can still need (only the spike's own span is summarized),
+        so memory stays flat on long, busy streams. chat_live.jsonl keeps everything."""
+        keep_from = t_now - (self.p.max_len + self.p.merge_gap + 2 * self.p.window)
+        if self._group:
+            keep_from = min(keep_from, self._group[0].start)
+        cut = bisect.bisect_left(self.msgs, keep_from, key=lambda m: m.t)
+        del self.msgs[:cut]
 
     def flush(self, wall_now: float) -> list[tuple[Moment, str | None]]:
         """Stream ended: close any spike still in progress."""
@@ -163,6 +178,10 @@ class ClipWorker(threading.Thread):
         with self._plock:
             return min(self.pending.values()) if self.pending else None
 
+    def _release(self, rec_entry: dict) -> None:
+        with self._plock:
+            self.pending.pop(rec_entry["rank"], None)
+
     def finish(self) -> None:
         self.jobs.put(None)
 
@@ -174,14 +193,17 @@ class ClipWorker(threading.Thread):
             rec_entry, a, b = job
             try:
                 self._make(rec_entry, a, b)
-            except ClipperError as e:
+            except Exception as e:   # any error: this clip fails, the worker keeps going
+                msg = str(e) if isinstance(e, ClipperError) else f"{type(e).__name__}: {e}"
                 rec_entry["file"] = None
-                rec_entry["error"] = str(e).splitlines()[0]
-                print(f"  ! clip {rec_entry['rank']} failed: {e}")
+                rec_entry["error"] = msg.splitlines()[0] if msg else type(e).__name__
+                print(f"  ! clip {rec_entry['rank']} failed: {msg}")
             finally:
-                with self._plock:
-                    self.pending.pop(rec_entry["rank"], None)
-                self.on_done()
+                self._release(rec_entry)
+                try:
+                    self.on_done()
+                except Exception as e:
+                    print(f"  ! couldn't save the report: {type(e).__name__}: {e}")
                 events.emit("clip", rank=rec_entry["rank"], status="failed" if rec_entry.get("error") else "done")
 
     def _make(self, rec_entry: dict, a: float, b: float) -> None:
@@ -191,6 +213,7 @@ class ClipWorker(threading.Thread):
         raw = self.sess_dir / "raw" / f"{rec_entry['rank']:02d}.mp4"
         raw.parent.mkdir(parents=True, exist_ok=True)
         self.rec.cut(a, b, raw)
+        self._release(rec_entry)   # cut: the buffer may drop this part now, even while rendering/captioning
         cam = self.candidates[0] if (self.layout == "stacked" and self.candidates) else None
         if self.detect_cam:
             idx, _hits = facecam.pick(raw, self.candidates)
@@ -277,14 +300,8 @@ def run(args: argparse.Namespace) -> int:
     if capcfg:   # load the speech model while waiting for the stream, not at the first clip
         threading.Thread(target=captions.preload, args=(capcfg,), daemon=True, name="caption-model").start()
 
-    scoring = config.load_scoring(args.keywords)
-    if args.per_user_cap is not None:
-        scoring.per_user_cap = args.per_user_cap
-    filters = config.load_filters(args.filters)
-    p = DetectParams(window=args.window, method=args.method, multiplier=args.multiplier, z=args.z,
-                     baseline_span=args.baseline, min_score=args.min_score, merge_gap=args.merge_gap,
-                     pre_roll=args.pre_roll, post_roll=args.post_roll, min_len=args.min_len,
-                     max_len=args.max_len, max_clips=args.max_clips or 10**9, rank_by=args.rank_by)
+    scoring, filters = load_scoring_filters(args)
+    p = detect_params(args, max_clips=args.max_clips or 10**9)
 
     streamer = channel if args.streamer == "auto" else args.streamer
     candidates = config.load_facecams(streamer, args.streamers) if args.layout == "stacked" else []
@@ -312,6 +329,7 @@ def run(args: argparse.Namespace) -> int:
     chat_log = sess_dir / "chat_live.jsonl"
     log_f = open(chat_log, "a", encoding="utf-8")
     report_lock = threading.Lock()
+    hour_counts: Counter = Counter()
 
     def save_report():
         with report_lock:
@@ -319,8 +337,12 @@ def run(args: argparse.Namespace) -> int:
                 return
             meta = VodMeta(vod_id=sess_dir.name, streamer=channel, title="live session",
                            length=time.time() - t0)
-            report.write_reports(sess_dir, meta, p, det.stats, records)
-            report.write_activity(sess_dir, p.window, list(det.windows))
+            try:
+                report.write_reports(sess_dir, meta, p, det.stats, records)
+                report.write_activity(sess_dir, p.window, list(det.windows))
+            except OSError as e:   # e.g. Windows keeps the file locked: the next save tries again
+                print(f"  ! couldn't save the report this time: {e}")
+                return
         events.emit("report")
 
     try:
@@ -340,7 +362,6 @@ def run(args: argparse.Namespace) -> int:
         worker.start()
         save_report()  # so the session (and the dashboard's view of it) exists from the start
 
-        hour_counts: Counter = Counter()
         last_cleanup = last_status = time.time()
         reconnecting_since: float | None = None
         seen_until = rec.covered_until()
@@ -364,8 +385,9 @@ def run(args: argparse.Namespace) -> int:
             for m, why in det.tick(now):
                 _consider(m, why, det, worker, records, accepted, live_clips, hour_counts, args, t0)
             if events.enabled() and len(det.windows) > sent_windows:
-                new_msgs = det.msgs[sent_msgs:]
-                sent_msgs = len(det.msgs)
+                unsent = det.msgs_total - sent_msgs
+                new_msgs = det.msgs[-unsent:] if unsent else []
+                sent_msgs = det.msgs_total
                 for w in det.windows[sent_windows:]:
                     events.emit("window", row=report.window_row(w))
                 sent_windows = len(det.windows)
@@ -418,6 +440,11 @@ def run(args: argparse.Namespace) -> int:
         chat.stop()
         log_f.close()
         return 1
+    except Exception:
+        rec.stop()   # never leave streamlink/ffmpeg recording after we're gone
+        chat.stop()
+        log_f.close()
+        raise
 
     # Shutdown: stop inputs, close any spike in progress, finish pending clips.
     events.emit("state", state="finishing", ended=ended)
@@ -426,7 +453,7 @@ def run(args: argparse.Namespace) -> int:
     log_f.close()
     if det is not None:
         for m, why in det.flush(time.time()):
-            _consider(m, why, det, worker, records, accepted, live_clips, Counter(), args, t0)
+            _consider(m, why, det, worker, records, accepted, live_clips, hour_counts, args, t0)
         if worker is not None:
             n = len(worker.pending)
             worker.finish()
@@ -530,7 +557,6 @@ def latest_vod_id(ytdlp: str, channel: str) -> str | None:
 
 
 def _vod_after(channel: str, args, live_clips, t0: float, found: dict) -> int:
-    from .cli import process_vod
     print("\n=== VOD follow-up: ranking the whole stream ===")
     events.emit("state", state="vod")
     try:
@@ -543,10 +569,7 @@ def _vod_after(channel: str, args, live_clips, t0: float, found: dict) -> int:
         vargs.downloader = "auto"
         vargs.max_clips = args.vod_max_clips
         vargs.quality = None if args.quality in ("best", "worst") else args.quality
-        scoring = config.load_scoring(args.keywords)
-        if args.per_user_cap is not None:
-            scoring.per_user_cap = args.per_user_cap
-        filters = config.load_filters(args.filters)
+        scoring, filters = load_scoring_filters(args)
         process_vod(vod_id, vargs, scoring, filters, found, live_clips=live_clips, must_cover=t0)
     except ClipperError as e:
         print(f"error: {e}")

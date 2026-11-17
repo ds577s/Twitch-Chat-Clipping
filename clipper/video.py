@@ -23,6 +23,7 @@ def download_segment(vod_id: str, start: float, end: float, dest: Path, found: d
         "yt-dlp": ["yt-dlp"],
     }[downloader]
     errors = []
+    final, dest = dest, dest.with_name(dest.stem + ".partial.mp4")  # an interrupted download never looks finished
     for tool in order:
         exe = found.get(tool)
         if not exe:
@@ -49,6 +50,7 @@ def download_segment(vod_id: str, start: float, end: float, dest: Path, found: d
                 cmd.append(f"https://www.twitch.tv/videos/{vod_id}")
             tools.run(cmd, f"Segment download via {tool}")
             if dest.exists() and dest.stat().st_size > 0:
+                dest.replace(final)
                 return
             errors.append(f"{tool}: finished but produced no file")
         except ClipperError as e:

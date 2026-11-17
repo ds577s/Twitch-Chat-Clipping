@@ -1,16 +1,18 @@
 """Record a live stream into a rolling buffer of short segments, and cut clips from it.
 
-streamlink -> stdout -> ffmpeg segment muxer. Segments are named after the local wall-clock
+streamlink -> stdout -> ffmpeg segment muxer. Segments are named after the UTC wall-clock
 time they started (seg_YYYYmmdd-HHMMSS.ts), which is the same clock the chat reader uses,
-so a chat spike at wall time W maps straight onto the video received at W.
+so a chat spike at wall time W maps straight onto the video received at W. UTC, not local
+time, so names never repeat when the clocks go back.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import ClipperError
@@ -52,7 +54,8 @@ class Recorder:
                "-f", "segment", "-segment_time", str(SEGMENT_SECONDS), "-segment_format", "mpegts",
                "-strftime", "1", str(self.seg_dir / f"seg_{_NAME_FMT}.ts")]
         self._ff = subprocess.Popen(cmd, stdin=self._src.stdout if self._src else subprocess.DEVNULL,
-                                    stdout=subprocess.DEVNULL, stderr=self._log)
+                                    stdout=subprocess.DEVNULL, stderr=self._log,
+                                    env={**os.environ, "TZ": "UTC0"})  # -strftime names in UTC
         if self._src:
             self._src.stdout.close()  # ffmpeg owns the pipe now
 
@@ -86,7 +89,7 @@ class Recorder:
         out = []
         for p in self.seg_dir.glob("seg_*.ts"):
             try:
-                out.append((datetime.strptime(p.stem[4:], _NAME_FMT).timestamp(), p))
+                out.append((datetime.strptime(p.stem[4:], _NAME_FMT).replace(tzinfo=timezone.utc).timestamp(), p))
             except ValueError:
                 continue
         return sorted(out)
