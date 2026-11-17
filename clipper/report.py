@@ -65,18 +65,7 @@ def write_reports(out_dir: Path, meta: VodMeta, params: DetectParams, stats: Cle
         "clips": records,
     }
     _write_json(jpath, payload, indent=2)
-
-    cols = ["rank", "file", "clipped_live", "clock_time", "clip_start_hms", "clip_start", "clip_end", "duration", "peak_time_hms",
-            "peak_score", "baseline", "ratio", "peak_unique_chatters", "messages_in_spike",
-            "top_messages", "vod_link"]
-    # utf-8-sig so Excel shows emoji correctly
-    with open(cpath, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
-        w.writeheader()
-        for r in records:
-            row = dict(r)
-            row["top_messages"] = " | ".join(f"{m['text']} (x{m['count']})" for m in r["top_messages"])
-            w.writerow(row)
+    _write_csv(cpath, records)
     return jpath, cpath
 
 
@@ -90,8 +79,23 @@ def previous_clips(out_dir: Path) -> dict[str, dict]:
 
 
 def save_report_json(out_dir: Path, data: dict) -> None:
-    """Rewrite report.json as given (used after captioning clips of an existing run)."""
+    """Rewrite report.json (and report.csv) as given, e.g. after captioning or deleting clips."""
     _write_json(out_dir / "report.json", data, indent=2)
+    _write_csv(out_dir / "report.csv", data.get("clips") or [])
+
+
+def _write_csv(cpath: Path, records: list[dict]) -> None:
+    cols = ["rank", "file", "clipped_live", "clock_time", "clip_start_hms", "clip_start", "clip_end", "duration", "peak_time_hms",
+            "peak_score", "baseline", "ratio", "peak_unique_chatters", "messages_in_spike",
+            "top_messages", "vod_link"]
+    # utf-8-sig so Excel shows emoji correctly
+    with open(cpath, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        for r in records:
+            row = dict(r)
+            row["top_messages"] = " | ".join(f"{m['text']} (x{m['count']})" for m in r.get("top_messages") or [])
+            w.writerow(row)
 
 
 def window_row(w) -> list:

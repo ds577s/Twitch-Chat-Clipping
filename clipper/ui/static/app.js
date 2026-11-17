@@ -554,10 +554,13 @@ function renderSession(mode) {
   }
   const grid = $('.moments', box);
   const seen = new Set();
+  const autoUn = (S.autoUnpicked ||= new Set());
   clips.forEach((c, i) => {
     const mtime = c.file ? data.files[c.file] : null;
+    // a deleted clip starts unticked, so "Cut selected" doesn't bring it back (tick it to re-cut)
+    if (c.deleted && !autoUn.has(`${name}#${c.rank}`)) { autoUn.add(`${name}#${c.rank}`); unpicked.add(c.rank); }
     const status = clipStatus[c.rank];
-    const sig = JSON.stringify([c.file, mtime, status, c.error, c.clipped_live, c.not_selected, unpicked.has(c.rank), c.peak_time, live, c.facecam, !!busy,
+    const sig = JSON.stringify([c.file, mtime, status, c.error, c.clipped_live, c.deleted, c.not_selected, unpicked.has(c.rank), c.peak_time, live, c.facecam, !!busy,
       c.captions, c.captions_error, (data.subs || []).includes(c.captions?.srt)]);
     const key = `m-${c.rank}`;
     seen.add(key);
@@ -571,6 +574,8 @@ function renderSession(mode) {
     if (el) el.replaceWith(fresh); else grid.insertBefore(fresh, grid.children[i] || null);
     const cb = fresh.querySelector('input[type=checkbox]');
     if (cb) cb.onchange = () => { cb.checked ? unpicked.delete(c.rank) : unpicked.add(c.rank); renderAll(); };
+    const del = fresh.querySelector('[data-act=delclip]');
+    if (del) del.onclick = () => deleteClip(name, c);
   });
   [...grid.children].forEach((el) => { if (!seen.has(el.dataset.key)) el.remove(); });
 }
@@ -587,6 +592,8 @@ function momentHTML(session, c, mtime, status, live, unpicked, busy, subs) {
     media = `<div class="ph err">Failed<br>${esc(c.error)}</div>`;
   } else if (c.clipped_live) {
     media = `<div class="ph">Already clipped live<br>${esc(c.clipped_live)}</div>`;
+  } else if (c.deleted) {
+    media = `<div class="ph">Deleted</div>`;
   } else {
     media = `<div class="ph">Not cut yet</div>`;
   }
@@ -603,6 +610,7 @@ function momentHTML(session, c, mtime, status, live, unpicked, busy, subs) {
   } else if (c.captions_error && c.file) {
     links.push(`<span class="cc-err" title="${esc(c.captions_error)}">captions failed</span>`);
   }
+  if (c.file && mtime && !busy) links.push('<button class="del" data-act="delclip" title="Delete this video from your computer">Delete</button>');
   const pick = !live && !c.clipped_live
     ? `<label class="pick"><input type="checkbox"${unpicked ? '' : ' checked'}>cut</label>` : '';
   return `<div class="moment${unpicked && !live ? ' unpicked' : ''}" id="moment-${esc(session)}-${c.rank}">
@@ -613,6 +621,18 @@ function momentHTML(session, c, mtime, status, live, unpicked, busy, subs) {
       <div class="chips">${top}</div>
       <div class="m-links">${links.join('')}</div>
     </div></div>`;
+}
+
+async function deleteClip(name, c) {
+  if (!confirm(`Delete clip #${c.rank}?\n\n${c.file} will be permanently deleted from your computer `
+    + '(not moved to the Recycle Bin), with its captions and subtitles.')) return;
+  try {
+    await api('/api/clips/delete', { method: 'POST', body: { session: name, rank: c.rank } });
+    (S.unpicked[name] ||= new Set()).add(c.rank);
+    toast(`Deleted clip #${c.rank}.`);
+    await loadSession(name);
+    refreshSessions();
+  } catch (e) { toast(e.message, true); }
 }
 
 async function cutSelected(name) {

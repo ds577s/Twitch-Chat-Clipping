@@ -7,10 +7,10 @@ device: auto            # auto uses the GPU if it works, else the CPU
 
 words_per_caption: 3
 font: "Arial Black"
-size: 84                # pixels on the 1080x1920 clip
+size: 76                # pixels on the 1080x1920 clip
 uppercase: true
-color: "#FFFFFF"
-highlight: "#4ADE80"      # the word being spoken
+color: "#ffffff"
+highlight: "#de4a4a"      # the word being spoken
 outline: 6
 position: auto          # auto (between facecam and gameplay, or lower middle), top, middle, bottom
 mask_swears: false

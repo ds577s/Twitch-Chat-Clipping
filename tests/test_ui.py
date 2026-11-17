@@ -143,3 +143,35 @@ class HttpSecurityTest(unittest.TestCase):
         self.assertEqual(self.req("GET", "/media/run1/a.mp4"), 200)
         self.assertEqual(self.req("GET", "/media/run1/..%2Fsecret.txt"), 404)
         self.assertEqual(self.req("GET", "/media/..%2Fsecret.txt"), 400)   # ".." is not a run name
+
+
+class DeleteClipTest(unittest.TestCase):
+    def setUp(self):
+        self.out = Path(tempfile.mkdtemp())
+        self.run = self.out / "123"
+        (self.run / "clean").mkdir(parents=True)
+        for f in ("01_a.mp4", "01_a.srt", "clean/01_a.mp4", "clean/01_a.words.json", "02_b.mp4"):
+            (self.run / f).write_bytes(b"x")
+        clips = [{"rank": 1, "file": "01_a.mp4", "layout": "center", "captions": {"words": 3}, "top_messages": []},
+                 {"rank": 2, "file": "02_b.mp4", "top_messages": []}]
+        (self.run / "report.json").write_text(json.dumps({"clips": clips}), encoding="utf-8")
+        self.app = server.App(self.out, self.out)
+
+    def test_deletes_files_and_marks_report(self):
+        self.app.delete_clip({"session": "123", "rank": 1})
+        left = sorted(str(p.relative_to(self.run)).replace("\\", "/") for p in self.run.rglob("*") if p.is_file())
+        self.assertEqual(left, ["02_b.mp4", "report.csv", "report.json"])
+        clips = json.loads((self.run / "report.json").read_text(encoding="utf-8"))["clips"]
+        self.assertEqual(clips[0], {"rank": 1, "file": None, "deleted": True, "top_messages": []})
+        self.assertEqual(clips[1]["file"], "02_b.mp4")
+        with self.assertRaises(server.ApiError):   # nothing left to delete
+            self.app.delete_clip({"session": "123", "rank": 1})
+
+    def test_refused_while_run_is_busy(self):
+        class Busy:
+            running, sessions = True, ["123"]
+        self.app.jobs["x"] = Busy()
+        with self.assertRaises(server.ApiError) as e:
+            self.app.delete_clip({"session": "123", "rank": 1})
+        self.assertEqual(e.exception.status, 409)
+        self.assertTrue((self.run / "01_a.mp4").exists())

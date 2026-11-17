@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .. import ClipperError, __version__, captions, config, facecam, tools
+from .. import ClipperError, __version__, captions, config, facecam, report, tools
 from ..chat import parse_vod_id
 
 STATIC = Path(__file__).parent / "static"
@@ -385,6 +385,32 @@ class App:
             argv.append("--retranscribe")
         return argv, f"Captions: {name}"
 
+    def delete_clip(self, payload: dict) -> dict:
+        """Delete one clip's video (and its captions files) from disk and mark it deleted in
+        the report. The moment stays listed, so a VOD clip can still be cut again later."""
+        name = str(payload.get("session", ""))
+        d = self.session_dir(name)
+        if any(j.running and name in j.sessions for j in self.jobs.values()):
+            raise ApiError(409, "That run is still busy. Wait for it to finish first.")  # it would rewrite the report
+        try:
+            rank = int(payload.get("rank"))
+        except (TypeError, ValueError):
+            raise ApiError(400, "rank: a clip number") from None
+        data = json.loads((d / "report.json").read_text(encoding="utf-8"))
+        clip = next((c for c in data.get("clips") or [] if c.get("rank") == rank and c.get("file")), None)
+        if clip is None:
+            raise ApiError(404, f"clip #{rank} has no video to delete")
+        file = clip["file"]
+        if Path(file).name != file:
+            raise ApiError(400, "unexpected clip file name")
+        (d / file).unlink(missing_ok=True)
+        captions.forget(d, file)   # clean copy, transcript, .srt
+        for k in ("captions", "captions_error", "layout", "facecam", "error"):
+            clip.pop(k, None)
+        clip.update(file=None, deleted=True)
+        report.save_report_json(d, data)
+        return {"ok": True, "deleted": file}
+
     def captions_info(self) -> dict:
         return {"available": captions.available(), "install": captions.INSTALL,
                 "config": asdict(captions.load_config()), "models": captions.MODELS,
@@ -610,6 +636,8 @@ class Handler(BaseHTTPRequestHandler):
             name = self._body().get("name")
             _open_folder(app.session_dir(name) if name else app.out_dir)
             self._json({"ok": True})
+        elif path == "/api/clips/delete" and method == "POST":
+            self._json(app.delete_clip(self._body()))
         elif path == "/api/jobs" and method == "GET":
             self._json([j.summary() for j in sorted(app.jobs.values(), key=lambda j: -j.started)])
         elif path == "/api/jobs" and method == "POST":
